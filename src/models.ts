@@ -9,9 +9,10 @@ export const LOWROUTER_PROVIDER_ID = "lowrouter";
 export const LOWROUTER_BASE_URL = "https://api.lowrouter.ai/v1";
 /**
  * Model-list path. `currency=usd` returns USD price ranges (Pi tracks cost in USD);
- * without it EUR-billed routes are listed in EUR.
+ * without it EUR-billed routes are listed in EUR. The server keeps only chat
+ * models with tool calling, the ones Pi can act through.
  */
-export const LOWROUTER_MODELS_PATH = "models?currency=usd";
+export const LOWROUTER_MODELS_PATH = "models?currency=usd&function_calling=yes&modality=chat";
 
 const MODELS_TIMEOUT_MS = 15_000;
 
@@ -117,21 +118,21 @@ function readReasoning(value: unknown, fallback: LowRouterModelRow | undefined):
 
 function projectRow(
   row: LowRouterLiveModelRow,
-  fallback: LowRouterModelRow | undefined,
+  fallbacks: ReadonlyMap<string, LowRouterModelRow>,
 ): LowRouterModelRow | undefined {
   const id = typeof row.id === "string" ? row.id.trim() : "";
   if (!id || !isPickerModelId(id)) {
     return undefined;
   }
   // Pi acts through tools: embeddings, realtime and tool-less chat models would
-  // fail on the first turn.
-  if (row.modality !== "chat" || asRecord(row.capabilities)?.function_calling !== true) {
+  // fail on the first turn. The query already asks for these; this guards a
+  // server that ignores the filter.
+  if (row.modality !== "chat" || row.capabilities?.function_calling !== true) {
     return undefined;
   }
 
-  const pricing = asRecord(row.auto_routing)?.pricing_range as
-    | NonNullable<NonNullable<LowRouterLiveModelRow["auto_routing"]>["pricing_range"]>
-    | undefined;
+  const fallback = fallbacks.get(id);
+  const pricing = row.auto_routing?.pricing_range;
   // Pi costs are USD. A range in any other currency is ignored rather than shown
   // under the wrong symbol.
   const usd = pricing?.currency === "USD" ? pricing : undefined;
@@ -175,7 +176,7 @@ export function projectLowRouterModelRows(
     if (!record) {
       continue;
     }
-    const model = projectRow(record as LowRouterLiveModelRow, byId.get(String(record.id)));
+    const model = projectRow(record as LowRouterLiveModelRow, byId);
     if (!model || seen.has(model.id)) {
       continue;
     }
@@ -197,19 +198,23 @@ export function toLowRouterModel(row: LowRouterModelRow, baseUrl = LOWROUTER_BAS
 }
 
 /**
- * Reads LowRouter's `/v1/models` with the user's key and returns its rows. A key
- * restricted to a catalog allowlist gets only the allowed models, and the
- * account's `alias/` models only appear with a key.
+ * Reads LowRouter's `/v1/models` and returns its rows. With a key, a catalog
+ * allowlist trims the list and the account's `alias/` models are added; without
+ * one, the public catalog comes back (what the release snapshot is built from).
  */
 export async function fetchLowRouterModelRows(options: {
-  apiKey: string;
-  baseUrl?: string;
+  baseUrl: string;
+  apiKey?: string;
   signal?: AbortSignal;
 }): Promise<unknown[]> {
-  const baseUrl = (options.baseUrl ?? LOWROUTER_BASE_URL).replace(/\/+$/, "");
   const timeout = AbortSignal.timeout(MODELS_TIMEOUT_MS);
+  const headers: Record<string, string> = { accept: "application/json" };
+  if (options.apiKey) {
+    headers.authorization = `Bearer ${options.apiKey}`;
+  }
+  const baseUrl = options.baseUrl.replace(/\/+$/, "");
   const response = await fetch(`${baseUrl}/${LOWROUTER_MODELS_PATH}`, {
-    headers: { accept: "application/json", authorization: `Bearer ${options.apiKey}` },
+    headers,
     signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
   });
   if (!response.ok) {

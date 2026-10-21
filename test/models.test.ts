@@ -163,6 +163,14 @@ describe("projectLowRouterModelRows", () => {
     });
   });
 
+  it("matches a padded live id to its snapshot row", () => {
+    const [model] = projectLowRouterModelRows(
+      [liveRow({ id: " auto/fixture/never-bundled ", context_length: undefined })],
+      [snapshotRow()],
+    );
+    expect(model).toMatchObject({ id: "auto/fixture/never-bundled", contextWindow: 64_000 });
+  });
+
   it("prefers live values over the snapshot row", () => {
     const [model] = projectLowRouterModelRows([liveRow()], [snapshotRow()]);
     expect(model).toMatchObject({
@@ -219,13 +227,25 @@ describe("fetchLowRouterModelRows", () => {
     );
   });
 
+  it("reads the public catalog without a key", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ data: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchLowRouterModelRows({ baseUrl: LOWROUTER_BASE_URL });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${LOWROUTER_BASE_URL}/${LOWROUTER_MODELS_PATH}`,
+      expect.objectContaining({ headers: { accept: "application/json" } }),
+    );
+  });
+
   it("rejects a failed request", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 401 })));
-    await expect(fetchLowRouterModelRows({ apiKey: "sk-lr-bad" })).rejects.toThrow("failed: 401");
+    await expect(fetchLowRouterModelRows({ baseUrl: LOWROUTER_BASE_URL, apiKey: "sk-lr-bad" })).rejects.toThrow("failed: 401");
   });
 
   it("rejects a body without a data array", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ object: "list" })));
-    await expect(fetchLowRouterModelRows({ apiKey: "sk-lr-test" })).rejects.toThrow("Invalid LowRouter model list");
+    await expect(fetchLowRouterModelRows({ baseUrl: LOWROUTER_BASE_URL, apiKey: "sk-lr-test" })).rejects.toThrow("Invalid LowRouter model list");
   });
 });

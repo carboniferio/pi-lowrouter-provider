@@ -2,35 +2,25 @@
 // Regenerates src/catalog.generated.ts, the offline snapshot, from LowRouter's
 // live /v1/models. Run before each release:
 //
-//   LOWROUTER_API_KEY=sk-lr-... npm run gen:catalog
+//   npm run gen:catalog
 //
-// The rows are the same projection the provider applies to live discovery, so the
-// offline picker matches what a signed-in user sees on the release date. Run it with
-// a key that has no catalog allowlist: an allowlist trims the list.
+// The rows are the same request and projection the provider applies to live
+// discovery, so the offline picker matches what a signed-in user sees on the release
+// date. It reads the public catalog, without a key.
 import { writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const outPath = fileURLToPath(new URL("../src/catalog.generated.ts", import.meta.url));
-const { LOWROUTER_BASE_URL, LOWROUTER_MODELS_PATH, projectLowRouterModelRows } = await import(
-  "../dist/models.js"
-);
+const { fetchLowRouterModelRows, LOWROUTER_BASE_URL, LOWROUTER_MODELS_PATH, projectLowRouterModelRows } =
+  await import("../dist/models.js");
 
-const apiKey = process.env.LOWROUTER_API_KEY?.trim();
 const url = `${LOWROUTER_BASE_URL}/${LOWROUTER_MODELS_PATH}`;
-const response = await fetch(url, {
-  headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
-  signal: AbortSignal.timeout(30_000),
-});
-if (!response.ok) {
-  throw new Error(`GET ${url} -> ${response.status}`);
-}
-const body = await response.json();
-if (!Array.isArray(body?.data)) {
-  throw new Error(`GET ${url}: no data array in the response`);
-}
+// No key on purpose: the snapshot is the public catalog. A key would trim it to that
+// key's allowlist and add the account's own alias/ models.
+const rows = await fetchLowRouterModelRows({ baseUrl: LOWROUTER_BASE_URL });
 
 // Generate from the live rows alone: earlier snapshot rows must not leak into the new one.
-const models = projectLowRouterModelRows(body.data)
+const models = projectLowRouterModelRows(rows)
   .filter((model) => model.id.startsWith("auto/"))
   .sort((a, b) => a.id.localeCompare(b.id));
 if (models.length === 0) {
