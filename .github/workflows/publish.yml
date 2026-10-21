@@ -1,9 +1,11 @@
 name: Publish
 
-# Releases to npm through trusted publishing (GitHub OIDC): no stored token, and
-# the package gets a provenance attestation. Run from the Actions tab once main
-# carries the new version and a fresh snapshot (`npm run gen:catalog`). Leave
-# dry_run on to preview.
+# Stages a release on npm through trusted publishing (GitHub OIDC): no stored
+# token, and the package gets a provenance attestation. A staged version is not
+# installable until a maintainer approves it with 2FA on npmjs.com (or
+# `npm stage approve <stage-id>`). Run from the Actions tab once main carries the
+# new version and a fresh snapshot (`npm run gen:catalog`). Leave dry_run on to
+# preview.
 on:
   workflow_dispatch:
     inputs:
@@ -30,5 +32,5 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - name: Publish
-        run: npm publish --access public --provenance ${{ inputs.dry_run && '--dry-run' || '' }}
+      - name: Stage
+        run: npm stage publish --access public --provenance ${{ inputs.dry_run && '--dry-run' || '' }}
