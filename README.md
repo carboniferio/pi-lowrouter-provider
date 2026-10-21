@@ -32,9 +32,9 @@ or `/model` in a session.
 
 ## Models
 
-With a key, the provider reads `GET /v1/models?currency=usd` when Pi starts, when the model
-picker refreshes and on `pi update --models`. Pi keeps the last list for offline starts. The
-picker lists:
+With a key, the provider reads `GET /v1/models?currency=usd&function_calling=yes&modality=chat`
+when Pi starts, when the model picker refreshes and on `pi update --models`. Pi keeps the last
+list for offline starts. The picker lists:
 
 - `auto/<creator>/<model>` IDs and your account's `alias/<name>` models;
 - chat models with tool calling only, since Pi acts through tools.
@@ -78,8 +78,8 @@ LOWROUTER_LIVE_TEST=1 LOWROUTER_API_KEY=sk-lr-... npm run test:live
 
 To release:
 
-1. Bump `version` in `package.json` and refresh the snapshot:
-   `LOWROUTER_API_KEY=sk-lr-... npm run gen:catalog`. Use a key without a catalog allowlist.
+1. Bump `version` in `package.json` and refresh the snapshot: `npm run gen:catalog`. It reads
+   the public catalog, without a key.
 2. Push to `main`, then run the **Publish** workflow from the Actions tab, first with `dry_run`
    on. It publishes to npm with provenance through trusted publishing, with no stored token.
 

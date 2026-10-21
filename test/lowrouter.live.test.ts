@@ -1,13 +1,16 @@
-// Live tests against LowRouter's production API. Gated on LOWROUTER_LIVE_TEST=1 and
-// LOWROUTER_API_KEY; they spend a few cents of the key's credit.
-import { type AssistantMessage, type Context, normalizeContext } from "@earendil-works/pi-ai/compat";
-import { describe, expect, it } from "vitest";
-import { type LowRouterModel, lowrouterProvider } from "../src/index.js";
+// Live tests against LowRouter's production API, through Pi's model runtime. Gated
+// on LOWROUTER_LIVE_TEST=1 and LOWROUTER_API_KEY; they spend a few cents of the
+// key's credit.
+import { type Api, type AssistantMessage, type Context, createModels, type Model, type Tool, Type } from "@earendil-works/pi-ai";
+import { beforeAll, describe, expect, it } from "vitest";
+import { lowrouterProvider } from "../src/index.js";
 
 const apiKey = process.env.LOWROUTER_API_KEY?.trim();
 const live = process.env.LOWROUTER_LIVE_TEST === "1" && Boolean(apiKey);
 
 // One model per family the picker leads with; each must stream and call tools.
+// Not auto/qwen/qwen3-coder-30b-a3b: its aws-bedrock br-gru route returns tool
+// calls as text about half the time, a LowRouter routing issue, not a Pi one.
 const MODELS = [
   "auto/mistralai/mistral-large-2512",
   "auto/mistralai/mistral-small-2603",
@@ -16,41 +19,30 @@ const MODELS = [
   "auto/openai/gpt-5.5",
 ];
 
-const readFileTool = {
+const readFileTool: Tool = {
   name: "read_file",
   description: "Read a file from the workspace and return its contents.",
-  parameters: {
-    type: "object",
-    properties: { path: { type: "string", description: "Workspace-relative path" } },
-    required: ["path"],
+  parameters: Type.Object({ path: Type.String({ description: "Workspace-relative path" }) }),
+};
+
+const models = createModels({
+  authContext: {
+    env: async (name) => (name === "LOWROUTER_API_KEY" ? apiKey : undefined),
+    fileExists: async () => false,
   },
-} as Context["tools"] extends (infer T)[] | undefined ? T : never;
+});
+models.setProvider(lowrouterProvider());
 
-async function liveModels(): Promise<{ provider: ReturnType<typeof lowrouterProvider>; models: LowRouterModel[] }> {
-  const provider = lowrouterProvider();
-  await provider.refreshModels?.({
-    credential: { type: "api_key", key: apiKey! },
-    allowNetwork: true,
-    signal: AbortSignal.timeout(30_000),
-    publish: async (publication) => {
-      publication.update?.();
-      return true;
-    },
-  });
-  return { provider, models: [...provider.getModels()] };
-}
-
-async function liveModel(id: string): Promise<LowRouterModel> {
-  const model = (await liveModels()).models.find((entry) => entry.id === id);
+function liveModel(id: string): Model<Api> {
+  const model = models.getModel("lowrouter", id);
   if (!model) {
     throw new Error(`${id} is not in the live catalog`);
   }
   return model;
 }
 
-async function run(model: LowRouterModel, context: Context): Promise<{ message: AssistantMessage; textDeltas: number }> {
-  const provider = lowrouterProvider();
-  const stream = provider.streamSimple(model, normalizeContext(context), { apiKey: apiKey! });
+async function run(id: string, context: Context): Promise<{ message: AssistantMessage; textDeltas: number }> {
+  const stream = models.streamSimple(liveModel(id), context);
   let textDeltas = 0;
   for await (const event of stream) {
     if (event.type === "text_delta") {
@@ -60,19 +52,21 @@ async function run(model: LowRouterModel, context: Context): Promise<{ message: 
   return { message: await stream.result(), textDeltas };
 }
 
-describe.skipIf(!live)("LowRouter live", () => {
-  it("discovers the account's models", async () => {
-    const { models } = await liveModels();
-    expect(models.length).toBeGreaterThan(50);
-    for (const id of MODELS) {
-      expect(models.map((model) => model.id)).toContain(id);
-    }
+describe.skipIf(!live).concurrent("LowRouter live", () => {
+  beforeAll(async () => {
+    const { errors } = await models.refresh({ providers: ["lowrouter"] });
+    expect(errors.get("lowrouter")).toBeUndefined();
+  });
+
+  it("discovers the account's models", () => {
+    const ids = models.getModels("lowrouter").map((model) => model.id);
+    expect(ids.length).toBeGreaterThan(50);
+    expect(ids).toEqual(expect.arrayContaining(MODELS));
   });
 
   for (const id of MODELS) {
     it(`${id}: streams text with usage`, { timeout: 120_000 }, async () => {
-      const model = await liveModel(id);
-      const { message, textDeltas } = await run(model, {
+      const { message, textDeltas } = await run(id, {
         messages: [{ role: "user", content: "Reply with the single word: pong", timestamp: Date.now() }],
       });
       expect(message.stopReason, message.errorMessage).toBe("stop");
@@ -82,8 +76,7 @@ describe.skipIf(!live)("LowRouter live", () => {
     });
 
     it(`${id}: calls a tool`, { timeout: 120_000 }, async () => {
-      const model = await liveModel(id);
-      const { message } = await run(model, {
+      const { message } = await run(id, {
         systemPrompt: "You are a coding agent. Use tools to read files; never guess their contents.",
         messages: [{ role: "user", content: "What does README.md say? Read it first.", timestamp: Date.now() }],
         tools: [readFileTool],

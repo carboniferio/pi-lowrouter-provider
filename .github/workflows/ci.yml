@@ -20,12 +20,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm run build
       - run: npm test
       - name: Verify package contents
         shell: bash
         run: |
           set -euo pipefail
+          # npm pack runs prepack, which builds dist/ for the next step too.
           tarball="$(npm pack --silent)"
           contents="$(tar -tzf "$tarball")"
           for f in package/dist/index.js package/dist/models.js package/dist/catalog.generated.js package/README.md; do
@@ -40,21 +40,11 @@ jobs:
           mkdir -p "$HOME"
           LOWROUTER_API_KEY=sk-lr-ci-placeholder PI_OFFLINE=1 pi -e ./dist/index.js --list-models lowrouter | tee models.txt
           grep -q '^lowrouter ' models.txt
-
-  live:
-    needs: build-test-pack
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
+      # Spends a few cents of the key's credit, so only on main and the daily run.
+      # Without the LOWROUTER_API_KEY secret the suite skips itself.
       - name: Live discovery, completion and tool call
+        if: github.ref == 'refs/heads/main'
         env:
           LOWROUTER_API_KEY: ${{ secrets.LOWROUTER_API_KEY }}
-        run: |
-          if [ -z "$LOWROUTER_API_KEY" ]; then echo "LOWROUTER_API_KEY secret not set; skipping"; exit 0; fi
-          LOWROUTER_LIVE_TEST=1 npm run test:live
+          LOWROUTER_LIVE_TEST: "1"
+        run: npm run test:live

@@ -1,6 +1,6 @@
 {
   "name": "@lowrouter/pi-provider",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "LowRouter provider for Pi: EU-run, carbon-aware model router behind one OpenAI-compatible API.",
   "license": "Apache-2.0",
   "author": "carboniferio",
@@ -13,8 +13,19 @@
   "bugs": {
     "url": "https://github.com/carboniferio/pi-lowrouter-provider/issues"
   },
-  "keywords": ["pi-package", "pi", "pi-provider", "lowrouter", "llm", "provider"],
-  "files": ["dist", "README.md", "LICENSE"],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-provider",
+    "lowrouter",
+    "llm",
+    "provider"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -24,13 +35,15 @@
     }
   },
   "pi": {
-    "extensions": ["./dist/index.js"]
+    "extensions": [
+      "./dist/index.js"
+    ]
   },
   "engines": {
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run test/models.test.ts test/index.test.ts",
     "test:live": "vitest run test/lowrouter.live.test.ts",
