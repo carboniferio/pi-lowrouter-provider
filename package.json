@@ -1,6 +1,6 @@
 {
   "name": "@lowrouter/pi-provider",
-  "version": "0.2.0",
+  "version": "0.1.1",
   "description": "LowRouter provider for Pi: EU-run, carbon-aware model router behind one OpenAI-compatible API.",
   "license": "Apache-2.0",
   "author": "carboniferio",
