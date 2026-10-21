@@ -81,7 +81,10 @@ To release:
 1. Bump `version` in `package.json` and refresh the snapshot: `npm run gen:catalog`. It reads
    the public catalog, without a key.
 2. Push to `main`, then run the **Publish** workflow from the Actions tab, first with `dry_run`
-   on. It publishes to npm with provenance through trusted publishing, with no stored token.
+   on. It stages the version on npm with provenance through trusted publishing, with no stored
+   token.
+3. Approve the staged version with 2FA on npmjs.com, or `npm stage approve <stage-id>`
+   (`npm stage list @lowrouter/pi-provider` shows the id). Until then it is not installable.
 
 ## License
 
