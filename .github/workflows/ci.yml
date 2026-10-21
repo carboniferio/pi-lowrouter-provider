@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "23 5 * * *" # daily, to catch Pi or /v1/models changes that break the provider
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+      - name: Verify package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$(npm pack --silent)"
+          contents="$(tar -tzf "$tarball")"
+          for f in package/dist/index.js package/dist/models.js package/dist/catalog.generated.js package/README.md; do
+            grep -qx "$f" <<<"$contents" || { echo "missing $f"; exit 1; }
+          done
+      - name: Load in Pi
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g "@earendil-works/pi-coding-agent@latest"
+          export HOME="$RUNNER_TEMP/pi-home"
+          mkdir -p "$HOME"
+          LOWROUTER_API_KEY=sk-lr-ci-placeholder PI_OFFLINE=1 pi -e ./dist/index.js --list-models lowrouter | tee models.txt
+          grep -q '^lowrouter ' models.txt
+
+  live:
+    needs: build-test-pack
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Live discovery, completion and tool call
+        env:
+          LOWROUTER_API_KEY: ${{ secrets.LOWROUTER_API_KEY }}
+        run: |
+          if [ -z "$LOWROUTER_API_KEY" ]; then echo "LOWROUTER_API_KEY secret not set; skipping"; exit 0; fi
+          LOWROUTER_LIVE_TEST=1 npm run test:live
