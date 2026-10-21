@@ -1860,7 +1860,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "cacheRead": 0,
       "cacheWrite": 0
     },
-    "contextWindow": 128000,
+    "contextWindow": 8192,
     "maxTokens": 8192
   },
   {
