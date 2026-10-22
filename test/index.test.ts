@@ -37,13 +37,39 @@ function runtime(options: { key?: string | null; modelsStore?: ModelsStore } = {
   return models;
 }
 
-function stubModelsResponse(response: () => Response) {
-  const fetchMock = vi.fn(async () => response());
+function stubFetch(response: () => Response) {
+  const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => response());
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
 
 const ids = (models: ReturnType<typeof runtime>) => models.getModels("lowrouter").map((model) => model.id);
+
+/** A streamed Anthropic Messages response that answers "pong". */
+function anthropicStream(): Response {
+  const events: Record<string, unknown>[] = [
+    {
+      type: "message_start",
+      message: {
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        model: "claude",
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 12, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "pong" } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } },
+    { type: "message_stop" },
+  ];
+  const body = events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("");
+  return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
 
 describe("lowrouterProvider", () => {
   afterEach(() => {
@@ -53,11 +79,12 @@ describe("lowrouterProvider", () => {
   it("starts from the snapshot", () => {
     const models = runtime();
     expect(ids(models)).toEqual(snapshotIds);
-    expect(models.getModels("lowrouter").every((model) => model.api === "openai-completions")).toBe(true);
+    expect(models.getModel("lowrouter", "auto/anthropic/claude-sonnet-4.6")?.api).toBe("anthropic-messages");
+    expect(models.getModel("lowrouter", "auto/mistralai/mistral-large-2512")?.api).toBe("openai-completions");
   });
 
   it("replaces the snapshot with the live list", async () => {
-    const fetchMock = stubModelsResponse(() => Response.json({ data: liveRows }));
+    const fetchMock = stubFetch(() => Response.json({ data: liveRows }));
     const models = runtime();
 
     const result = await models.refresh({ providers: ["lowrouter"] });
@@ -78,7 +105,7 @@ describe("lowrouterProvider", () => {
   });
 
   it("drops the snapshot when the live list is empty", async () => {
-    stubModelsResponse(() => Response.json({ data: [] }));
+    stubFetch(() => Response.json({ data: [] }));
     const models = runtime();
 
     const result = await models.refresh({ providers: ["lowrouter"] });
@@ -88,10 +115,10 @@ describe("lowrouterProvider", () => {
   });
 
   it("restores the last live list offline", async () => {
-    stubModelsResponse(() => Response.json({ data: liveRows }));
+    stubFetch(() => Response.json({ data: liveRows }));
     const modelsStore = new InMemoryModelsStore();
     await runtime({ modelsStore }).refresh({ providers: ["lowrouter"] });
-    const fetchMock = stubModelsResponse(() => new Response("unreachable", { status: 500 }));
+    const fetchMock = stubFetch(() => new Response("unreachable", { status: 500 }));
 
     const offline = runtime({ modelsStore });
     await offline.refresh({ providers: ["lowrouter"], allowNetwork: false });
@@ -104,7 +131,7 @@ describe("lowrouterProvider", () => {
     ["without a key", { key: null }, {}],
     ["offline", {}, { allowNetwork: false }],
   ] as const)("keeps the snapshot and makes no request %s", async (_label, runtimeOptions, refreshOptions) => {
-    const fetchMock = stubModelsResponse(() => Response.json({ data: liveRows }));
+    const fetchMock = stubFetch(() => Response.json({ data: liveRows }));
     const models = runtime(runtimeOptions);
 
     await models.refresh({ providers: ["lowrouter"], ...refreshOptions });
@@ -114,7 +141,7 @@ describe("lowrouterProvider", () => {
   });
 
   it("keeps the previous list when the refresh fails", async () => {
-    stubModelsResponse(() => new Response("down", { status: 503 }));
+    stubFetch(() => new Response("down", { status: 503 }));
     const models = runtime();
 
     const result = await models.refresh({ providers: ["lowrouter"] });
@@ -124,7 +151,7 @@ describe("lowrouterProvider", () => {
   });
 
   it("serves refreshed models from the configured base URL", async () => {
-    const fetchMock = stubModelsResponse(() => Response.json({ data: liveRows }));
+    const fetchMock = stubFetch(() => Response.json({ data: liveRows }));
     const provider = lowrouterProvider();
 
     await provider.refreshModels?.({
@@ -142,6 +169,73 @@ describe("lowrouterProvider", () => {
     expect(provider.getModels().find((model) => model.id === "alias/team-coder")?.baseUrl).toBe(
       "https://proxy.example/v1",
     );
+  });
+});
+
+describe("requests", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    // Adaptive: Pi's level goes out as the effort the routes take.
+    [
+      "auto/anthropic/claude-sonnet-4.6",
+      { thinking: { type: "adaptive", display: "summarized" }, output_config: { effort: "medium" } },
+    ],
+    // Budget: Pi's level goes out as a thinking-token budget.
+    ["auto/anthropic/claude-haiku-4.5", { thinking: { type: "enabled", budget_tokens: expect.any(Number) } }],
+  ])("sends %s to /v1/messages in Anthropic's shape", async (id, thinking) => {
+    const fetchMock = stubFetch(anthropicStream);
+    const models = runtime();
+
+    const message = await models.completeSimple(
+      models.getModel("lowrouter", id)!,
+      {
+        systemPrompt: "You are a coding agent.",
+        messages: [{ role: "user", content: "Reply with the single word: pong", timestamp: Date.now() }],
+      },
+      { reasoning: "medium" },
+    );
+
+    expect(message.stopReason, message.errorMessage).toBe("stop");
+    expect(message.content).toEqual([expect.objectContaining({ type: "text", text: "pong" })]);
+    expect(message.usage).toMatchObject({ input: 12, output: 2 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.lowrouter.ai/v1/messages?beta=true");
+    expect(new Headers(init?.headers).get("x-api-key")).toBe("sk-lr-test");
+    const body = JSON.parse(String(init?.body));
+    expect(body).toMatchObject({ model: id, stream: true, ...thinking });
+    expect(body.system).toEqual([expect.objectContaining({ cache_control: { type: "ephemeral" } })]);
+    expect(body.messages.at(-1).content.at(-1)).toMatchObject({ cache_control: { type: "ephemeral" } });
+  });
+
+  it("drops /v1 from an overridden base URL for /v1/messages", async () => {
+    // A models.json `baseUrl` replaces every model's base URL with the OpenAI-style one.
+    const fetchMock = stubFetch(anthropicStream);
+    const models = runtime();
+    const model = models.getModel("lowrouter", "auto/anthropic/claude-haiku-4.5")!;
+
+    const message = await models.completeSimple(
+      { ...model, baseUrl: "https://proxy.example/v1" },
+      { messages: [{ role: "user", content: "ping", timestamp: Date.now() }] },
+    );
+
+    expect(message.stopReason, message.errorMessage).toBe("stop");
+    expect(String(fetchMock.mock.calls[0]![0])).toBe("https://proxy.example/v1/messages?beta=true");
+  });
+
+  it("sends other models to /v1/chat/completions", async () => {
+    const fetchMock = stubFetch(() => new Response("down", { status: 400 }));
+    const models = runtime();
+
+    await models.completeSimple(models.getModel("lowrouter", "auto/mistralai/mistral-large-2512")!, {
+      messages: [{ role: "user", content: "ping", timestamp: Date.now() }],
+    });
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(`${LOWROUTER_BASE_URL}/chat/completions`);
   });
 });
 
