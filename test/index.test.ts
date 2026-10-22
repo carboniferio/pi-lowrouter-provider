@@ -288,6 +288,20 @@ describe("requests", () => {
     expect(message.errorMessage?.includes("LowRouter needs an API key") ?? false).toBe(!keyed);
   });
 
+  it("fails a model on another API without a key with LowRouter's message", async () => {
+    // A models.json model can name an API outside the two LowRouter serves.
+    const fetchMock = stubFetch(anthropicStream);
+    const models = runtime({ key: null });
+    const model = models.getModel("lowrouter", "auto/mistralai/mistral-large-2512")!;
+
+    const message = await models.completeSimple({ ...model, api: "openai-responses" } as typeof model, ping(), {
+      headers: { "x-custom": "1" },
+    });
+
+    expect(message.errorMessage).toContain("LowRouter needs an API key");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("sends other models to /v1/chat/completions", async () => {
     const fetchMock = stubFetch(() => new Response("down", { status: 400 }));
     const models = runtime();

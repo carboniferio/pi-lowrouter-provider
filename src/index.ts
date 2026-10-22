@@ -63,7 +63,8 @@ const KEY_HEADERS: Record<LowRouterApi, readonly string[]> = {
 };
 
 function hasKey(api: LowRouterApi, options: StreamOptions | undefined): boolean {
-  const headers = KEY_HEADERS[api];
+  // A `models.json` model can name an API outside LowRouterApi.
+  const headers: readonly string[] = KEY_HEADERS[api] ?? [];
   return (
     Boolean(options?.apiKey) ||
     Object.entries(options?.headers ?? {}).some(([name, value]) => headers.includes(name.toLowerCase()) && Boolean(value?.trim()))
