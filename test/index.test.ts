@@ -21,6 +21,7 @@ const liveRows = [
   { id: "auto/fixture/embedder", modality: "embedding", capabilities: { function_calling: false } },
 ];
 
+const liveIds = ["auto/fixture/live-only", "alias/team-coder"];
 const snapshotIds = LOWROUTER_CATALOG.map((model) => model.id);
 
 /** Pi's model runtime with the LowRouter provider, `LOWROUTER_API_KEY` set unless `key` is null. */
@@ -71,6 +72,9 @@ function anthropicStream(): Response {
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+/** A one-message prompt. */
+const ping = () => ({ messages: [{ role: "user" as const, content: "ping", timestamp: Date.now() }] });
+
 describe("lowrouterProvider", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -94,7 +98,7 @@ describe("lowrouterProvider", () => {
       `${LOWROUTER_BASE_URL}/${LOWROUTER_MODELS_PATH}`,
       expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer sk-lr-test" }) }),
     );
-    expect(ids(models)).toEqual(["auto/fixture/live-only", "alias/team-coder"]);
+    expect(ids(models)).toEqual(liveIds);
     expect(models.getModel("lowrouter", "auto/fixture/live-only")).toMatchObject({
       name: "Live Only",
       provider: "lowrouter",
@@ -124,17 +128,42 @@ describe("lowrouterProvider", () => {
     await offline.refresh({ providers: ["lowrouter"], allowNetwork: false });
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(ids(offline)).toEqual(["auto/fixture/live-only", "alias/team-coder"]);
+    expect(ids(offline)).toEqual(liveIds);
   });
 
-  it.each([
-    ["without a key", { key: null }, {}],
-    ["offline", {}, { allowNetwork: false }],
-  ] as const)("keeps the snapshot and makes no request %s", async (_label, runtimeOptions, refreshOptions) => {
+  it("lists LowRouter and refreshes the public list without a key", async () => {
     const fetchMock = stubFetch(() => Response.json({ data: liveRows }));
-    const models = runtime(runtimeOptions);
+    const modelsStore = new InMemoryModelsStore();
+    const models = runtime({ key: null, modelsStore });
 
-    await models.refresh({ providers: ["lowrouter"], ...refreshOptions });
+    expect((await models.getAvailable("lowrouter")).length).toBe(snapshotIds.length);
+    const result = await models.refresh({ providers: ["lowrouter"] });
+
+    expect(result.errors.size).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${LOWROUTER_BASE_URL}/${LOWROUTER_MODELS_PATH}`,
+      expect.objectContaining({ headers: expect.not.objectContaining({ authorization: expect.anything() }) }),
+    );
+    expect(ids(models)).toEqual(liveIds);
+    expect((await modelsStore.read("lowrouter"))?.models.map((model) => model.id)).toEqual(liveIds);
+  });
+
+  it("keeps the snapshot when the public list is empty", async () => {
+    stubFetch(() => Response.json({ data: [] }));
+    const models = runtime({ key: null });
+
+    const result = await models.refresh({ providers: ["lowrouter"] });
+
+    expect(result.errors.get("lowrouter")?.message).toContain("public model list is empty");
+    expect(ids(models)).toEqual(snapshotIds);
+  });
+
+  it("keeps the snapshot and makes no request offline", async () => {
+    const fetchMock = stubFetch(() => Response.json({ data: liveRows }));
+    const models = runtime();
+
+    await models.refresh({ providers: ["lowrouter"], allowNetwork: false });
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(ids(models)).toEqual(snapshotIds);
@@ -219,20 +248,65 @@ describe("requests", () => {
 
     const message = await models.completeSimple(
       { ...model, baseUrl: "https://proxy.example/v1" },
-      { messages: [{ role: "user", content: "ping", timestamp: Date.now() }] },
+      ping(),
     );
 
     expect(message.stopReason, message.errorMessage).toBe("stop");
     expect(String(fetchMock.mock.calls[0]![0])).toBe("https://proxy.example/v1/messages?beta=true");
   });
 
+  it.each(["auto/anthropic/claude-haiku-4.5", "auto/mistralai/mistral-large-2512"])(
+    "fails %s without a key before any request",
+    async (id) => {
+      const fetchMock = stubFetch(anthropicStream);
+      const models = runtime({ key: null });
+
+      const message = await models.completeSimple(models.getModel("lowrouter", id)!, ping());
+
+      expect(message.stopReason).toBe("error");
+      expect(message.errorMessage).toContain("LowRouter needs an API key");
+      expect(message.errorMessage).toContain("https://lowrouter.ai/app/keys");
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  // The headers Pi's own APIs take in place of a key, per API.
+  it.each([
+    ["auto/anthropic/claude-haiku-4.5", "Authorization", true],
+    ["auto/anthropic/claude-haiku-4.5", "x-api-key", true],
+    ["auto/mistralai/mistral-large-2512", "cf-aig-authorization", true],
+    ["auto/mistralai/mistral-large-2512", "x-api-key", false],
+  ])("treats a %s request with a key in %s as keyed: %s", async (id, header, keyed) => {
+    const fetchMock = stubFetch(anthropicStream);
+    const models = runtime({ key: null });
+
+    const message = await models.completeSimple(models.getModel("lowrouter", id)!, ping(), {
+      headers: { [header]: "sk-lr-header" },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(keyed ? 1 : 0);
+    expect(message.errorMessage?.includes("LowRouter needs an API key") ?? false).toBe(!keyed);
+  });
+
+  it("fails a model on another API without a key with LowRouter's message", async () => {
+    // A models.json model can name an API outside the two LowRouter serves.
+    const fetchMock = stubFetch(anthropicStream);
+    const models = runtime({ key: null });
+    const model = models.getModel("lowrouter", "auto/mistralai/mistral-large-2512")!;
+
+    const message = await models.completeSimple({ ...model, api: "openai-responses" } as typeof model, ping(), {
+      headers: { "x-custom": "1" },
+    });
+
+    expect(message.errorMessage).toContain("LowRouter needs an API key");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("sends other models to /v1/chat/completions", async () => {
     const fetchMock = stubFetch(() => new Response("down", { status: 400 }));
     const models = runtime();
 
-    await models.completeSimple(models.getModel("lowrouter", "auto/mistralai/mistral-large-2512")!, {
-      messages: [{ role: "user", content: "ping", timestamp: Date.now() }],
-    });
+    await models.completeSimple(models.getModel("lowrouter", "auto/mistralai/mistral-large-2512")!, ping());
 
     expect(fetchMock).toHaveBeenCalled();
     expect(String(fetchMock.mock.calls[0]![0])).toBe(`${LOWROUTER_BASE_URL}/chat/completions`);
