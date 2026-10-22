@@ -77,7 +77,6 @@ const withKey = (call: [string, RequestInit?]) => new Headers(call[1]?.headers).
 describe("lowrouterProvider", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
-    vi.unstubAllEnvs();
   });
 
   it("starts from the snapshot", () => {
@@ -123,7 +122,6 @@ describe("lowrouterProvider", () => {
     const modelsStore = new InMemoryModelsStore();
     await runtime({ modelsStore }).refresh({ providers: ["lowrouter"] });
     const fetchMock = stubFetch(() => new Response("unreachable", { status: 500 }));
-    vi.stubEnv("PI_OFFLINE", "1");
 
     const offline = runtime({ modelsStore });
     await offline.refresh({ providers: ["lowrouter"], allowNetwork: false });
@@ -132,81 +130,36 @@ describe("lowrouterProvider", () => {
     expect(ids(offline)).toEqual(["auto/fixture/live-only", "alias/team-coder"]);
   });
 
-  it("lists the public list without a key, without waiting for it", async () => {
-    let respond!: () => void;
-    const fetchMock = vi.fn(
-      (_url: string, _init?: RequestInit) =>
-        new Promise<Response>((resolve) => {
-          respond = () => resolve(Response.json({ data: liveRows }));
-        }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
+  it("lists LowRouter and refreshes the public list without a key", async () => {
+    const fetchMock = stubFetch(() => Response.json({ data: liveRows }));
     const modelsStore = new InMemoryModelsStore();
     const models = runtime({ key: null, modelsStore });
 
+    expect((await models.getAvailable("lowrouter")).length).toBe(snapshotIds.length);
     const result = await models.refresh({ providers: ["lowrouter"] });
 
     expect(result.errors.size).toBe(0);
-    expect(ids(models)).toEqual(snapshotIds);
-    respond();
-    await vi.waitFor(() => expect(ids(models)).toEqual(["auto/fixture/live-only", "alias/team-coder"]));
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]![0]).toBe(`${LOWROUTER_BASE_URL}/${LOWROUTER_MODELS_PATH}`);
     expect(withKey(fetchMock.mock.calls[0]!)).toBe(false);
-    // Pi's cache holds only keyed lists.
-    expect(await modelsStore.read("lowrouter")).toBeUndefined();
-
-    await models.refresh({ providers: ["lowrouter"] });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(ids(models)).toEqual(["auto/fixture/live-only", "alias/team-coder"]);
+    expect((await modelsStore.read("lowrouter"))?.models.map((model) => model.id)).toEqual([
+      "auto/fixture/live-only",
+      "alias/team-coder",
+    ]);
   });
 
-  it("keeps the snapshot when the public list fails or is empty", async () => {
-    for (const response of [() => new Response("down", { status: 503 }), () => Response.json({ data: [] })]) {
-      const fetchMock = stubFetch(response);
-      const models = runtime({ key: null });
+  it("keeps the snapshot when the public list is empty", async () => {
+    stubFetch(() => Response.json({ data: [] }));
+    const models = runtime({ key: null });
 
-      await models.refresh({ providers: ["lowrouter"] });
-      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
-      await new Promise((resolve) => setTimeout(resolve, 0));
+    const result = await models.refresh({ providers: ["lowrouter"] });
 
-      expect(ids(models)).toEqual(snapshotIds);
-    }
-  });
-
-  it("prefers the keyed list to the public one", async () => {
-    const keyedRows = liveRows.filter((row) => row.id === "alias/team-coder");
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) =>
-      Response.json({ data: withKey([url, init]) ? keyedRows : liveRows }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    const models = runtime();
-
-    await models.refresh({ providers: ["lowrouter"] });
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(fetchMock.mock.calls.map(withKey).sort()).toEqual([false, true]);
-    expect(ids(models)).toEqual(["alias/team-coder"]);
-  });
-
-  it("prefers Pi's cached list to the public one", async () => {
-    const modelsStore = new InMemoryModelsStore();
-    await modelsStore.write("lowrouter", {
-      models: [{ ...lowrouterProvider().getModels()[0]!, id: "alias/cached" }],
-      checkedAt: Date.now(),
-    });
-    const fetchMock = stubFetch(() => Response.json({ data: liveRows }));
-    const models = runtime({ key: null, modelsStore });
-
-    await models.refresh({ providers: ["lowrouter"] });
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(ids(models)).toEqual(["alias/cached"]);
+    expect(result.errors.get("lowrouter")?.message).toContain("public model list is empty");
+    expect(ids(models)).toEqual(snapshotIds);
   });
 
   it("keeps the snapshot and makes no request offline", async () => {
-    vi.stubEnv("PI_OFFLINE", "1");
     const fetchMock = stubFetch(() => Response.json({ data: liveRows }));
     const models = runtime();
 
@@ -300,6 +253,37 @@ describe("requests", () => {
 
     expect(message.stopReason, message.errorMessage).toBe("stop");
     expect(String(fetchMock.mock.calls[0]![0])).toBe("https://proxy.example/v1/messages?beta=true");
+  });
+
+  it.each(["auto/anthropic/claude-haiku-4.5", "auto/mistralai/mistral-large-2512"])(
+    "fails %s without a key before any request",
+    async (id) => {
+      const fetchMock = stubFetch(anthropicStream);
+      const models = runtime({ key: null });
+
+      const message = await models.completeSimple(models.getModel("lowrouter", id)!, {
+        messages: [{ role: "user", content: "ping", timestamp: Date.now() }],
+      });
+
+      expect(message.stopReason).toBe("error");
+      expect(message.errorMessage).toContain("LowRouter needs an API key");
+      expect(message.errorMessage).toContain("https://lowrouter.ai/app/keys");
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("sends a request whose key is in a header", async () => {
+    const fetchMock = stubFetch(anthropicStream);
+    const models = runtime({ key: null });
+
+    const message = await models.completeSimple(
+      models.getModel("lowrouter", "auto/anthropic/claude-haiku-4.5")!,
+      { messages: [{ role: "user", content: "ping", timestamp: Date.now() }] },
+      { headers: { Authorization: "Bearer sk-lr-header" } },
+    );
+
+    expect(message.stopReason, message.errorMessage).toBe("stop");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("sends other models to /v1/chat/completions", async () => {

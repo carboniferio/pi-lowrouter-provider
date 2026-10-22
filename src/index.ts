@@ -4,7 +4,7 @@
  * Registers `lowrouter` with the models of the release-time snapshot, then
  * replaces them with the live `/v1/models` list: the public one without a key,
  * the account's own (allowlist applied, `alias/` models added) once a key is
- * configured (`LOWROUTER_API_KEY` or `/login`). Pi keeps the last keyed list for
+ * configured (`LOWROUTER_API_KEY` or `/login`). Pi keeps the last list for
  * offline starts. Claude models use Pi's Anthropic API, the others chat
  * completions.
  */
@@ -14,6 +14,7 @@ import {
   anthropicMessagesApi,
   createProvider,
   envApiKeyAuth,
+  lazyStream,
   openAICompletionsApi,
   type Provider,
   type ProviderStreams,
@@ -25,7 +26,6 @@ import {
   LOWROUTER_BASE_URL,
   LOWROUTER_PROVIDER_ID,
   type LowRouterApi,
-  type LowRouterModel,
   projectLowRouterModelRows,
   toAnthropicBaseUrl,
   toLowRouterModel,
@@ -33,15 +33,46 @@ import {
 
 const SNAPSHOT_MODELS = LOWROUTER_CATALOG.map((row) => toLowRouterModel(row));
 
-/** The live `/v1/models` list as Pi models; without `apiKey`, the public one. */
-async function fetchModelList(
-  configuredBaseUrl: string | undefined,
-  apiKey?: string,
-  signal?: AbortSignal,
-): Promise<LowRouterModel[]> {
-  const baseUrl = (configuredBaseUrl || LOWROUTER_BASE_URL).replace(/\/+$/, "");
-  const rows = await fetchLowRouterModelRows({ baseUrl, apiKey, signal });
-  return projectLowRouterModelRows(rows, LOWROUTER_CATALOG).map((row) => toLowRouterModel(row, baseUrl));
+const MISSING_KEY_MESSAGE =
+  "LowRouter needs an API key to send requests. Run /login and pick LowRouter, or set " +
+  "LOWROUTER_API_KEY. Get a key at https://lowrouter.ai/app/keys";
+
+/**
+ * `LOWROUTER_API_KEY` or a `/login` key. Without one, auth still resolves, with
+ * no credential: Pi then counts LowRouter as configured, lists its models and
+ * refreshes them from the public `/v1/models`. There is deliberately no `check`,
+ * which Pi would run instead of `resolve` to decide whether to list the models.
+ */
+function lowrouterApiKeyAuth() {
+  const auth = envApiKeyAuth("LowRouter API key", ["LOWROUTER_API_KEY"]);
+  return {
+    ...auth,
+    resolve: async (input: Parameters<typeof auth.resolve>[0]) =>
+      (await auth.resolve(input)) ?? { auth: {}, source: "no key (public model list)" },
+  };
+}
+
+function hasHeader(headers: Record<string, string | null> | undefined, name: string): boolean {
+  return Object.entries(headers ?? {}).some(([key, value]) => key.toLowerCase() === name && Boolean(value?.trim()));
+}
+
+/**
+ * Fails a request that carries no key with LowRouter's own message, before any
+ * network call. A `models.json` header can carry the key instead, as Pi's APIs
+ * accept.
+ */
+function requireKey(api: ProviderStreams): ProviderStreams {
+  const hasKey = (options?: { apiKey?: string; headers?: Record<string, string | null> }) =>
+    Boolean(options?.apiKey) || hasHeader(options?.headers, "authorization") || hasHeader(options?.headers, "x-api-key");
+  const missingKey = (model: Parameters<ProviderStreams["stream"]>[0]) =>
+    lazyStream(model, async () => {
+      throw new Error(MISSING_KEY_MESSAGE);
+    });
+  return {
+    stream: (model, context, options) => (hasKey(options) ? api.stream(model, context, options) : missingKey(model)),
+    streamSimple: (model, context, options) =>
+      hasKey(options) ? api.streamSimple(model, context, options) : missingKey(model),
+  };
 }
 
 /**
@@ -70,56 +101,40 @@ export function lowrouterProvider(): Provider<LowRouterApi> {
     id: LOWROUTER_PROVIDER_ID,
     name: "LowRouter",
     baseUrl: LOWROUTER_BASE_URL,
-    auth: { apiKey: envApiKeyAuth("LowRouter API key", ["LOWROUTER_API_KEY"]) },
+    auth: { apiKey: lowrouterApiKeyAuth() },
     models: [],
     fetchModels: async (context) => {
-      // Pi fetches only with a resolved key. Throwing keeps the cached list;
-      // returning [] would persist an empty one over it.
-      if (context.credential?.type !== "api_key") {
-        throw new Error("LowRouter model refresh needs an API key");
+      const apiKey = context.credential?.type === "api_key" ? context.credential.key : undefined;
+      const baseUrl = (context.baseUrl || LOWROUTER_BASE_URL).replace(/\/+$/, "");
+      const rows = await fetchLowRouterModelRows({ baseUrl, apiKey, signal: context.signal });
+      const models = projectLowRouterModelRows(rows, LOWROUTER_CATALOG).map((row) => toLowRouterModel(row, baseUrl));
+      // A key's allowlist can leave nothing usable; the public list cannot.
+      // Throwing keeps the previous list, where returning [] would persist an
+      // empty one over it.
+      if (!apiKey && models.length === 0) {
+        throw new Error("LowRouter's public model list is empty");
       }
-      return fetchModelList(context.baseUrl, context.credential.key, context.signal);
+      return models;
     },
     // Claude models go to /v1/messages, the rest to /v1/chat/completions.
-    api: { "openai-completions": openAICompletionsApi(), "anthropic-messages": lowrouterAnthropicApi() },
+    api: {
+      "openai-completions": requireKey(openAICompletionsApi()),
+      "anthropic-messages": requireKey(lowrouterAnthropicApi()),
+    },
   });
-  // The snapshot stands in only until a live list exists. As createProvider's
-  // baseline it would never be dropped, and a key with a catalog allowlist would
-  // keep listing models it cannot use. A list Pi publishes (the keyed one, or
-  // Pi's cache of it) wins, even when empty: an allowlist can leave nothing
-  // usable. The public list comes next.
+  // The snapshot stands in only until a live list exists, restored or fetched.
+  // As createProvider's baseline it would never be dropped, and a key with a
+  // catalog allowlist would keep listing models it cannot use. A published live
+  // list replaces it even when empty: an allowlist can leave nothing usable.
   let hasLiveList = false;
-  let publicModels: LowRouterModel[] | undefined;
-  let publicListRequested = false;
-  // Pi's network phase needs a resolved key, so without one Pi never calls
-  // fetchModels. The provider reads the public list itself, once, when Pi first
-  // restores its models (at registration). It is not awaited: a slow or failed
-  // request leaves the snapshot, and Pi's startup never waits on it.
-  const loadPublicList = (baseUrl: string | undefined) => {
-    if (publicListRequested || process.env.PI_OFFLINE !== undefined) {
-      return;
-    }
-    publicListRequested = true;
-    fetchModelList(baseUrl).then(
-      (models) => {
-        // An empty public list is a server fault, not an allowlist.
-        if (models.length > 0) {
-          publicModels = models;
-        }
-      },
-      () => {},
-    );
-  };
-  const fallbackModels = () => [...(publicModels ?? SNAPSHOT_MODELS)];
   const refreshModels = provider.refreshModels!;
   const getAllModels = provider.getAllModels!;
   return {
     ...provider,
-    getModels: () => (hasLiveList ? provider.getModels() : fallbackModels()),
-    getAllModels: () => (hasLiveList ? getAllModels() : fallbackModels()),
-    refreshModels: (context) => {
-      loadPublicList(context.baseUrl);
-      return refreshModels({
+    getModels: () => (hasLiveList ? provider.getModels() : [...SNAPSHOT_MODELS]),
+    getAllModels: () => (hasLiveList ? getAllModels() : [...SNAPSHOT_MODELS]),
+    refreshModels: (context) =>
+      refreshModels({
         ...context,
         publish: (publication) =>
           context.publish({
@@ -129,8 +144,7 @@ export function lowrouterProvider(): Provider<LowRouterApi> {
               hasLiveList = true;
             },
           }),
-      });
-    },
+      }),
   };
 }
 
