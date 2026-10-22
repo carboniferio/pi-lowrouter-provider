@@ -68,8 +68,10 @@ LowRouter as configured, with no credential. The models show in `/model` and
 `pi --list-models`, but a request fails before it is sent, with a message to run `/login` or set
 `LOWROUTER_API_KEY`. Two things follow from Pi counting LowRouter as configured:
 
-- If no built-in Pi provider is configured either, a fresh Pi picks a LowRouter model as its
-  default, so the first prompt shows that message instead of Pi's "No models available" notice.
+- If no default model is saved and no configured provider has a Pi default model (a custom
+  `models.json` provider has none), a fresh Pi can pick a LowRouter model as its default, and the
+  first prompt shows that message. With no other provider at all, it replaces Pi's "No models
+  available" notice.
 - A session, or Pi's saved default model, on a LowRouter model restores without a key and fails
   at the first prompt, instead of switching to another provider.
 
