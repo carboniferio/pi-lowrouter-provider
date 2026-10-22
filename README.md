@@ -70,8 +70,8 @@ LowRouter as configured, with no credential. The models show in `/model` and
 
 - If no built-in Pi provider is configured either, a fresh Pi picks a LowRouter model as its
   default, so the first prompt shows that message instead of Pi's "No models available" notice.
-- A session saved on a LowRouter model restores without a key and fails at the first prompt,
-  instead of switching to another provider.
+- A session, or Pi's saved default model, on a LowRouter model restores without a key and fails
+  at the first prompt, instead of switching to another provider.
 
 ## Cost
 
