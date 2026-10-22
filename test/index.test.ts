@@ -71,9 +71,13 @@ function anthropicStream(): Response {
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
+/** Whether a model-list request carried the key. */
+const withKey = (call: [string, RequestInit?]) => new Headers(call[1]?.headers).has("authorization");
+
 describe("lowrouterProvider", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("starts from the snapshot", () => {
@@ -119,6 +123,7 @@ describe("lowrouterProvider", () => {
     const modelsStore = new InMemoryModelsStore();
     await runtime({ modelsStore }).refresh({ providers: ["lowrouter"] });
     const fetchMock = stubFetch(() => new Response("unreachable", { status: 500 }));
+    vi.stubEnv("PI_OFFLINE", "1");
 
     const offline = runtime({ modelsStore });
     await offline.refresh({ providers: ["lowrouter"], allowNetwork: false });
@@ -127,14 +132,85 @@ describe("lowrouterProvider", () => {
     expect(ids(offline)).toEqual(["auto/fixture/live-only", "alias/team-coder"]);
   });
 
-  it.each([
-    ["without a key", { key: null }, {}],
-    ["offline", {}, { allowNetwork: false }],
-  ] as const)("keeps the snapshot and makes no request %s", async (_label, runtimeOptions, refreshOptions) => {
-    const fetchMock = stubFetch(() => Response.json({ data: liveRows }));
-    const models = runtime(runtimeOptions);
+  it("lists the public list without a key, without waiting for it", async () => {
+    let respond!: () => void;
+    const fetchMock = vi.fn(
+      (_url: string, _init?: RequestInit) =>
+        new Promise<Response>((resolve) => {
+          respond = () => resolve(Response.json({ data: liveRows }));
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const modelsStore = new InMemoryModelsStore();
+    const models = runtime({ key: null, modelsStore });
 
-    await models.refresh({ providers: ["lowrouter"], ...refreshOptions });
+    const result = await models.refresh({ providers: ["lowrouter"] });
+
+    expect(result.errors.size).toBe(0);
+    expect(ids(models)).toEqual(snapshotIds);
+    respond();
+    await vi.waitFor(() => expect(ids(models)).toEqual(["auto/fixture/live-only", "alias/team-coder"]));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe(`${LOWROUTER_BASE_URL}/${LOWROUTER_MODELS_PATH}`);
+    expect(withKey(fetchMock.mock.calls[0]!)).toBe(false);
+    // Pi's cache holds only keyed lists.
+    expect(await modelsStore.read("lowrouter")).toBeUndefined();
+
+    await models.refresh({ providers: ["lowrouter"] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the snapshot when the public list fails or is empty", async () => {
+    for (const response of [() => new Response("down", { status: 503 }), () => Response.json({ data: [] })]) {
+      const fetchMock = stubFetch(response);
+      const models = runtime({ key: null });
+
+      await models.refresh({ providers: ["lowrouter"] });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(ids(models)).toEqual(snapshotIds);
+    }
+  });
+
+  it("prefers the keyed list to the public one", async () => {
+    const keyedRows = liveRows.filter((row) => row.id === "alias/team-coder");
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) =>
+      Response.json({ data: withKey([url, init]) ? keyedRows : liveRows }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const models = runtime();
+
+    await models.refresh({ providers: ["lowrouter"] });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fetchMock.mock.calls.map(withKey).sort()).toEqual([false, true]);
+    expect(ids(models)).toEqual(["alias/team-coder"]);
+  });
+
+  it("prefers Pi's cached list to the public one", async () => {
+    const modelsStore = new InMemoryModelsStore();
+    await modelsStore.write("lowrouter", {
+      models: [{ ...lowrouterProvider().getModels()[0]!, id: "alias/cached" }],
+      checkedAt: Date.now(),
+    });
+    const fetchMock = stubFetch(() => Response.json({ data: liveRows }));
+    const models = runtime({ key: null, modelsStore });
+
+    await models.refresh({ providers: ["lowrouter"] });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(ids(models)).toEqual(["alias/cached"]);
+  });
+
+  it("keeps the snapshot and makes no request offline", async () => {
+    vi.stubEnv("PI_OFFLINE", "1");
+    const fetchMock = stubFetch(() => Response.json({ data: liveRows }));
+    const models = runtime();
+
+    await models.refresh({ providers: ["lowrouter"], allowNetwork: false });
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(ids(models)).toEqual(snapshotIds);

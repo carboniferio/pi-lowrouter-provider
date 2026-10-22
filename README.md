@@ -14,8 +14,9 @@ Requires Pi `1.3.0` or newer and Node.js `22.19` or newer.
 pi install npm:@lowrouter/pi-provider
 ```
 
-Get a key at [lowrouter.ai/app/keys](https://lowrouter.ai/app/keys), then either export it or
-store it with `/login` inside Pi (pick **LowRouter**):
+The model list needs no key. To send requests, get a key at
+[lowrouter.ai/app/keys](https://lowrouter.ai/app/keys), then either export it or store it with
+`/login` inside Pi (pick **LowRouter**):
 
 ```bash
 export LOWROUTER_API_KEY=sk-lr-...
@@ -32,9 +33,11 @@ or `/model` in a session.
 
 ## Models
 
-With a key, the provider reads `GET /v1/models?currency=usd&function_calling=yes&modality=chat`
-when Pi starts, when the model picker refreshes and on `pi update --models`. Pi keeps the last
-list for offline starts. The picker lists:
+The provider reads `GET /v1/models?currency=usd&function_calling=yes&modality=chat`. Without a
+key it reads the public list once when Pi starts, in the background. With a key it reads the
+account's list when Pi starts, when the model picker refreshes and on `pi update --models`: the
+key's catalog allowlist applies and the account's `alias/` models are added. Pi keeps the last
+keyed list for offline starts. The picker lists:
 
 - `auto/<creator>/<model>` IDs and your account's `alias/<name>` models;
 - chat models with tool calling only, since Pi acts through tools.
@@ -55,7 +58,8 @@ mode gets a thinking-token budget for it.
 A model without a published context window gets 32,768 tokens, so Pi compacts early rather than
 sending a prompt the model rejects. A model without an output limit gets 8,192.
 
-Before the first refresh, Pi uses the snapshot shipped with the release. The snapshot is
+Until a live or cached list is in, Pi uses the snapshot shipped with the release, and it stays
+when Pi is offline (`--offline` or `PI_OFFLINE`) with nothing cached. The snapshot is
 generated from the same endpoint by `npm run gen:catalog`; nothing in it is written by hand.
 
 ## Cost
