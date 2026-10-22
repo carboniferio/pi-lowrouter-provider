@@ -12,12 +12,15 @@
 // entry that also exports the API implementations.
 import {
   anthropicMessagesApi,
+  type ApiKeyAuth,
   createProvider,
   envApiKeyAuth,
   lazyStream,
+  type Model,
   openAICompletionsApi,
   type Provider,
   type ProviderStreams,
+  type StreamOptions,
 } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { LOWROUTER_CATALOG } from "./catalog.generated.js";
@@ -40,39 +43,31 @@ const MISSING_KEY_MESSAGE =
 /**
  * `LOWROUTER_API_KEY` or a `/login` key. Without one, auth still resolves, with
  * no credential: Pi then counts LowRouter as configured, lists its models and
- * refreshes them from the public `/v1/models`. There is deliberately no `check`,
- * which Pi would run instead of `resolve` to decide whether to list the models.
+ * refreshes them from the public `/v1/models`. It has no `check`: Pi would run
+ * that instead of `resolve` to decide whether to list the models.
  */
-function lowrouterApiKeyAuth() {
-  const auth = envApiKeyAuth("LowRouter API key", ["LOWROUTER_API_KEY"]);
+function lowrouterApiKeyAuth(): ApiKeyAuth {
+  const { name, login, resolve } = envApiKeyAuth("LowRouter API key", ["LOWROUTER_API_KEY"]);
   return {
-    ...auth,
-    resolve: async (input: Parameters<typeof auth.resolve>[0]) =>
-      (await auth.resolve(input)) ?? { auth: {}, source: "no key (public model list)" },
+    name,
+    login,
+    resolve: async (input) => (await resolve(input)) ?? { auth: {}, source: "no key (public model list)" },
   };
 }
 
-function hasHeader(headers: Record<string, string | null> | undefined, name: string): boolean {
-  return Object.entries(headers ?? {}).some(([key, value]) => key.toLowerCase() === name && Boolean(value?.trim()));
-}
+// Headers each Pi API accepts in place of an API key, as Pi's own key check
+// lists them; a `models.json` header can carry the key.
+const KEY_HEADERS: Record<LowRouterApi, readonly string[]> = {
+  "openai-completions": ["authorization", "cf-aig-authorization"],
+  "anthropic-messages": ["authorization", "x-api-key", "cf-aig-authorization"],
+};
 
-/**
- * Fails a request that carries no key with LowRouter's own message, before any
- * network call. A `models.json` header can carry the key instead, as Pi's APIs
- * accept.
- */
-function requireKey(api: ProviderStreams): ProviderStreams {
-  const hasKey = (options?: { apiKey?: string; headers?: Record<string, string | null> }) =>
-    Boolean(options?.apiKey) || hasHeader(options?.headers, "authorization") || hasHeader(options?.headers, "x-api-key");
-  const missingKey = (model: Parameters<ProviderStreams["stream"]>[0]) =>
-    lazyStream(model, async () => {
-      throw new Error(MISSING_KEY_MESSAGE);
-    });
-  return {
-    stream: (model, context, options) => (hasKey(options) ? api.stream(model, context, options) : missingKey(model)),
-    streamSimple: (model, context, options) =>
-      hasKey(options) ? api.streamSimple(model, context, options) : missingKey(model),
-  };
+function hasKey(api: LowRouterApi, options: StreamOptions | undefined): boolean {
+  const headers = KEY_HEADERS[api];
+  return (
+    Boolean(options?.apiKey) ||
+    Object.entries(options?.headers ?? {}).some(([name, value]) => headers.includes(name.toLowerCase()) && Boolean(value?.trim()))
+  );
 }
 
 /**
@@ -117,20 +112,28 @@ export function lowrouterProvider(): Provider<LowRouterApi> {
       return models;
     },
     // Claude models go to /v1/messages, the rest to /v1/chat/completions.
-    api: {
-      "openai-completions": requireKey(openAICompletionsApi()),
-      "anthropic-messages": requireKey(lowrouterAnthropicApi()),
-    },
+    api: { "openai-completions": openAICompletionsApi(), "anthropic-messages": lowrouterAnthropicApi() },
   });
   // The snapshot stands in only until a live list exists, restored or fetched.
   // As createProvider's baseline it would never be dropped, and a key with a
   // catalog allowlist would keep listing models it cannot use. A published live
-  // list replaces it even when empty: an allowlist can leave nothing usable.
+  // list replaces it even when empty (fetchModels publishes an empty list only
+  // for a key whose allowlist leaves nothing usable).
   let hasLiveList = false;
   const refreshModels = provider.refreshModels!;
   const getAllModels = provider.getAllModels!;
+  // A request without a key fails here with LowRouter's own message, before
+  // any network call, instead of Pi's generic one.
+  const missingKey = (model: Model<LowRouterApi>) =>
+    lazyStream(model, async () => {
+      throw new Error(MISSING_KEY_MESSAGE);
+    });
   return {
     ...provider,
+    stream: (model, context, options) =>
+      hasKey(model.api, options) ? provider.stream(model, context, options) : missingKey(model),
+    streamSimple: (model, context, options) =>
+      hasKey(model.api, options) ? provider.streamSimple(model, context, options) : missingKey(model),
     getModels: () => (hasLiveList ? provider.getModels() : [...SNAPSHOT_MODELS]),
     getAllModels: () => (hasLiveList ? getAllModels() : [...SNAPSHOT_MODELS]),
     refreshModels: (context) =>

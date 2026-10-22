@@ -21,6 +21,7 @@ const liveRows = [
   { id: "auto/fixture/embedder", modality: "embedding", capabilities: { function_calling: false } },
 ];
 
+const liveIds = ["auto/fixture/live-only", "alias/team-coder"];
 const snapshotIds = LOWROUTER_CATALOG.map((model) => model.id);
 
 /** Pi's model runtime with the LowRouter provider, `LOWROUTER_API_KEY` set unless `key` is null. */
@@ -71,8 +72,8 @@ function anthropicStream(): Response {
   return new Response(body, { headers: { "content-type": "text/event-stream" } });
 }
 
-/** Whether a model-list request carried the key. */
-const withKey = (call: [string, RequestInit?]) => new Headers(call[1]?.headers).has("authorization");
+/** A one-message prompt. */
+const ping = () => ({ messages: [{ role: "user" as const, content: "ping", timestamp: Date.now() }] });
 
 describe("lowrouterProvider", () => {
   afterEach(() => {
@@ -97,7 +98,7 @@ describe("lowrouterProvider", () => {
       `${LOWROUTER_BASE_URL}/${LOWROUTER_MODELS_PATH}`,
       expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer sk-lr-test" }) }),
     );
-    expect(ids(models)).toEqual(["auto/fixture/live-only", "alias/team-coder"]);
+    expect(ids(models)).toEqual(liveIds);
     expect(models.getModel("lowrouter", "auto/fixture/live-only")).toMatchObject({
       name: "Live Only",
       provider: "lowrouter",
@@ -127,7 +128,7 @@ describe("lowrouterProvider", () => {
     await offline.refresh({ providers: ["lowrouter"], allowNetwork: false });
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(ids(offline)).toEqual(["auto/fixture/live-only", "alias/team-coder"]);
+    expect(ids(offline)).toEqual(liveIds);
   });
 
   it("lists LowRouter and refreshes the public list without a key", async () => {
@@ -140,13 +141,12 @@ describe("lowrouterProvider", () => {
 
     expect(result.errors.size).toBe(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]![0]).toBe(`${LOWROUTER_BASE_URL}/${LOWROUTER_MODELS_PATH}`);
-    expect(withKey(fetchMock.mock.calls[0]!)).toBe(false);
-    expect(ids(models)).toEqual(["auto/fixture/live-only", "alias/team-coder"]);
-    expect((await modelsStore.read("lowrouter"))?.models.map((model) => model.id)).toEqual([
-      "auto/fixture/live-only",
-      "alias/team-coder",
-    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${LOWROUTER_BASE_URL}/${LOWROUTER_MODELS_PATH}`,
+      expect.objectContaining({ headers: expect.not.objectContaining({ authorization: expect.anything() }) }),
+    );
+    expect(ids(models)).toEqual(liveIds);
+    expect((await modelsStore.read("lowrouter"))?.models.map((model) => model.id)).toEqual(liveIds);
   });
 
   it("keeps the snapshot when the public list is empty", async () => {
@@ -248,7 +248,7 @@ describe("requests", () => {
 
     const message = await models.completeSimple(
       { ...model, baseUrl: "https://proxy.example/v1" },
-      { messages: [{ role: "user", content: "ping", timestamp: Date.now() }] },
+      ping(),
     );
 
     expect(message.stopReason, message.errorMessage).toBe("stop");
@@ -261,9 +261,7 @@ describe("requests", () => {
       const fetchMock = stubFetch(anthropicStream);
       const models = runtime({ key: null });
 
-      const message = await models.completeSimple(models.getModel("lowrouter", id)!, {
-        messages: [{ role: "user", content: "ping", timestamp: Date.now() }],
-      });
+      const message = await models.completeSimple(models.getModel("lowrouter", id)!, ping());
 
       expect(message.stopReason).toBe("error");
       expect(message.errorMessage).toContain("LowRouter needs an API key");
@@ -272,27 +270,29 @@ describe("requests", () => {
     },
   );
 
-  it("sends a request whose key is in a header", async () => {
+  // The headers Pi's own APIs take in place of a key, per API.
+  it.each([
+    ["auto/anthropic/claude-haiku-4.5", "Authorization", true],
+    ["auto/anthropic/claude-haiku-4.5", "x-api-key", true],
+    ["auto/mistralai/mistral-large-2512", "cf-aig-authorization", true],
+    ["auto/mistralai/mistral-large-2512", "x-api-key", false],
+  ])("treats a %s request with a key in %s as keyed: %s", async (id, header, keyed) => {
     const fetchMock = stubFetch(anthropicStream);
     const models = runtime({ key: null });
 
-    const message = await models.completeSimple(
-      models.getModel("lowrouter", "auto/anthropic/claude-haiku-4.5")!,
-      { messages: [{ role: "user", content: "ping", timestamp: Date.now() }] },
-      { headers: { Authorization: "Bearer sk-lr-header" } },
-    );
+    const message = await models.completeSimple(models.getModel("lowrouter", id)!, ping(), {
+      headers: { [header]: "sk-lr-header" },
+    });
 
-    expect(message.stopReason, message.errorMessage).toBe("stop");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(keyed ? 1 : 0);
+    expect(message.errorMessage?.includes("LowRouter needs an API key") ?? false).toBe(!keyed);
   });
 
   it("sends other models to /v1/chat/completions", async () => {
     const fetchMock = stubFetch(() => new Response("down", { status: 400 }));
     const models = runtime();
 
-    await models.completeSimple(models.getModel("lowrouter", "auto/mistralai/mistral-large-2512")!, {
-      messages: [{ role: "user", content: "ping", timestamp: Date.now() }],
-    });
+    await models.completeSimple(models.getModel("lowrouter", "auto/mistralai/mistral-large-2512")!, ping());
 
     expect(fetchMock).toHaveBeenCalled();
     expect(String(fetchMock.mock.calls[0]![0])).toBe(`${LOWROUTER_BASE_URL}/chat/completions`);
