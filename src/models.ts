@@ -32,13 +32,25 @@ const LOWROUTER_COMPAT: OpenAICompletionsCompat = {
   supportsUsageInStreaming: true,
 };
 
-export type LowRouterModel = Model<"openai-completions">;
+/** The Pi chat APIs LowRouter models are served through. */
+export type LowRouterApi = "openai-completions" | "anthropic-messages";
+export type LowRouterModel = Model<"openai-completions"> | Model<"anthropic-messages">;
 
 /** The data half of a model; the release-time snapshot stores only this. */
 export type LowRouterModelRow = Pick<
   LowRouterModel,
   "id" | "name" | "reasoning" | "thinkingLevelMap" | "input" | "cost" | "contextWindow" | "maxTokens"
->;
+> & {
+  /**
+   * `auto_routing.reasoning_mode` of a Claude model: `adaptive` takes Pi's
+   * thinking level as an effort, `budget` as a thinking-token budget.
+   */
+  reasoningMode?: ReasoningMode;
+};
+
+/** `reasoning_mode` values Pi's Anthropic client acts on. */
+const REASONING_MODES = ["adaptive", "budget"] as const;
+type ReasoningMode = (typeof REASONING_MODES)[number];
 
 /** `reasoning_effort` values LowRouter publishes, in Pi's thinking-level order. */
 const EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
@@ -56,6 +68,7 @@ type LowRouterLiveModelRow = {
   capabilities?: { function_calling?: unknown; input_modalities?: unknown };
   auto_routing?: {
     reasoning_effort?: unknown;
+    reasoning_mode?: unknown;
     pricing_range?: {
       currency?: unknown;
       prompt_per_1m_tokens?: PriceRange;
@@ -99,6 +112,17 @@ export function isPickerModelId(id: string): boolean {
   return (parts[0] === "auto" && parts.length === 3) || (parts[0] === "alias" && parts.length === 2);
 }
 
+/**
+ * Claude models, served on LowRouter's Anthropic-native `/v1/messages` so thinking
+ * blocks, `cache_control` breakpoints and tool use keep Anthropic's own shape.
+ * Among picker ids only `auto/anthropic/` ones are Claude; an `alias/` model's
+ * target is not published, so it stays on chat completions. The rows' `endpoints`
+ * cannot decide it: every model lists `messages`, Anthropic-native or translated.
+ */
+export function isAnthropicMessagesModelId(id: string): boolean {
+  return id.startsWith("auto/anthropic/");
+}
+
 function readInput(value: unknown, fallback: LowRouterModelRow | undefined): LowRouterModelRow["input"] {
   if (!Array.isArray(value)) {
     return fallback?.input ?? ["text"];
@@ -112,8 +136,9 @@ function readName(value: unknown, id: string): string {
 
 /**
  * Pi's thinking levels mapped onto the `reasoning_effort` values the model's
- * default routes apply. An unpublished level is `null`, so Pi does not offer it;
- * `off` stays unmapped, so Pi sends no effort and the model keeps its default.
+ * default routes apply. An unpublished level is `null`, so Pi does not offer it.
+ * `off` stays unmapped: on chat completions Pi sends no effort and the model keeps
+ * its default; on the Anthropic API Pi disables thinking.
  */
 function thinkingLevelMap(levels: ReadonlySet<EffortLevel>): NonNullable<LowRouterModelRow["thinkingLevelMap"]> {
   const map: NonNullable<LowRouterModelRow["thinkingLevelMap"]> = {};
@@ -153,6 +178,22 @@ function readReasoning(
     : { reasoning: fallback?.reasoning ?? false };
 }
 
+/**
+ * How a Claude model takes Pi's thinking level: `auto_routing.reasoning_mode`.
+ * Only Claude rows carry a mode. One the row leaves out (or a row without
+ * `auto_routing`), or one Pi does not act on, keeps the snapshot's.
+ */
+function readReasoningMode(
+  id: string,
+  row: LowRouterLiveModelRow,
+  fallback: LowRouterModelRow | undefined,
+): ReasoningMode | undefined {
+  if (!isAnthropicMessagesModelId(id)) {
+    return undefined;
+  }
+  return REASONING_MODES.find((mode) => mode === row.auto_routing?.reasoning_mode) ?? fallback?.reasoningMode;
+}
+
 function projectRow(
   row: LowRouterLiveModelRow,
   fallbacks: ReadonlyMap<string, LowRouterModelRow>,
@@ -174,6 +215,7 @@ function projectRow(
   // under the wrong symbol.
   const usd = pricing?.currency === "USD" ? pricing : undefined;
 
+  const reasoningMode = readReasoningMode(id, row, fallback);
   const contextWindow =
     readPositiveInteger(row.context_length) ?? fallback?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   const maxTokens = Math.min(
@@ -185,6 +227,7 @@ function projectRow(
     id,
     name: readName(row.name, id),
     ...readReasoning(row, fallback),
+    ...(reasoningMode && { reasoningMode }),
     input: readInput(row.capabilities?.input_modalities, fallback),
     cost: {
       input: readRangeMax(usd?.prompt_per_1m_tokens) ?? fallback?.cost.input ?? 0,
@@ -223,15 +266,33 @@ export function projectLowRouterModelRows(
   return models;
 }
 
-/** Turns a data row into a Pi chat model served through LowRouter. */
+/**
+ * Base URL of the Anthropic API behind an OpenAI-style one: Pi's Anthropic
+ * client appends `/v1/messages`, so a trailing `/v1` is dropped. Applied per
+ * request, so a `models.json` `baseUrl` override is converted too.
+ */
+export function toAnthropicBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
+}
+
+/**
+ * Turns a data row into a Pi chat model served through LowRouter: Claude on the
+ * Anthropic API, every other model on chat completions. `baseUrl` is the
+ * OpenAI-style base the provider is configured with; every model keeps it.
+ */
 export function toLowRouterModel(row: LowRouterModelRow, baseUrl = LOWROUTER_BASE_URL): LowRouterModel {
-  return {
-    ...row,
-    api: "openai-completions",
-    provider: LOWROUTER_PROVIDER_ID,
-    baseUrl,
-    compat: { ...LOWROUTER_COMPAT },
-  };
+  const { reasoningMode, ...data } = row;
+  const base = { ...data, provider: LOWROUTER_PROVIDER_ID, baseUrl };
+  if (isAnthropicMessagesModelId(row.id)) {
+    return {
+      ...base,
+      api: "anthropic-messages",
+      // An adaptive model gets its level as an effort through thinkingLevelMap;
+      // the others get a thinking-token budget for it.
+      compat: { forceAdaptiveThinking: reasoningMode === "adaptive" },
+    };
+  }
+  return { ...base, api: "openai-completions", compat: { ...LOWROUTER_COMPAT } };
 }
 
 /**

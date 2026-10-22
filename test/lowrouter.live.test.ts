@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { beforeAll, describe, expect, it } from "vitest";
 import { lowrouterProvider } from "../src/index.js";
+import { isAnthropicMessagesModelId } from "../src/models.js";
 
 const apiKey = process.env.LOWROUTER_API_KEY?.trim();
 const live = process.env.LOWROUTER_LIVE_TEST === "1" && Boolean(apiKey);
@@ -25,11 +26,21 @@ const MODELS = [
   "auto/mistralai/mistral-small-2603",
   "auto/qwen/qwen3-coder-next",
   "auto/anthropic/claude-haiku-4.5",
+  "auto/anthropic/claude-sonnet-4.6",
   "auto/openai/gpt-5.5",
 ];
 
+// Claude on /v1/messages: Sonnet 4.6 thinks adaptively, Haiku 4.5 on a budget.
+const CLAUDE_MODELS = MODELS.filter(isAnthropicMessagesModelId);
+
 // Models whose default routes publish `reasoning_effort` levels.
-const REASONING_MODELS = ["auto/anthropic/claude-sonnet-4.6", "auto/google/gemini-3.1-pro-preview"];
+const REASONING_MODELS = [...CLAUDE_MODELS, "auto/google/gemini-3.1-pro-preview"];
+
+// Above Haiku 4.5's minimum cacheable prompt of 4,096 tokens.
+const LONG_SYSTEM_PROMPT = Array.from(
+  { length: 350 },
+  (_, i) => `Rule ${i + 1}: keep function number ${i + 1} short, typed and clearly named.`,
+).join("\n");
 
 const readFileTool: Tool = {
   name: "read_file",
@@ -78,6 +89,10 @@ describe.skipIf(!live).concurrent("LowRouter live", () => {
     const ids = models.getModels("lowrouter").map((model) => model.id);
     expect(ids.length).toBeGreaterThan(50);
     expect(ids).toEqual(expect.arrayContaining(MODELS));
+    for (const id of CLAUDE_MODELS) {
+      expect(liveModel(id).api).toBe("anthropic-messages");
+    }
+    expect(liveModel("auto/mistralai/mistral-large-2512").api).toBe("openai-completions");
   });
 
   for (const id of MODELS) {
@@ -116,6 +131,32 @@ describe.skipIf(!live).concurrent("LowRouter live", () => {
       );
       expect(message.stopReason, message.errorMessage).toBe("stop");
       expect(message.content.some((block) => block.type === "text" && block.text.includes("391"))).toBe(true);
+      // Not asserted yet: a thinking block. LowRouter's /v1/messages drops Claude's
+      // thinking blocks on the Bedrock routes although the model thinks.
+    });
+  }
+
+  // Pi marks the system prompt and the last user turn with cache_control; the
+  // second turn must read the prefix the first one wrote. Caching does not depend
+  // on the thinking mode, so the cheaper Claude model covers it.
+  {
+    const id = "auto/anthropic/claude-haiku-4.5";
+    it(`${id}: reads the prompt cache on the second turn`, { timeout: 180_000 }, async () => {
+      const context: Context = {
+        systemPrompt: LONG_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: "Reply with the single word: pong", timestamp: Date.now() }],
+      };
+      const first = await run(id, context);
+      expect(first.message.stopReason, first.message.errorMessage).toBe("stop");
+
+      context.messages.push(first.message, {
+        role: "user",
+        content: "Reply with the single word: ping",
+        timestamp: Date.now(),
+      });
+      const second = await run(id, context);
+      expect(second.message.stopReason, second.message.errorMessage).toBe("stop");
+      expect(second.message.usage.cacheRead).toBeGreaterThan(0);
     });
   }
 });

@@ -81,6 +81,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "high": "high",
       "xhigh": "xhigh"
     },
+    "reasoningMode": "adaptive",
     "input": [
       "text",
       "image"
@@ -105,6 +106,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "high": "high",
       "xhigh": "xhigh"
     },
+    "reasoningMode": "adaptive",
     "input": [
       "text",
       "image"
@@ -129,6 +131,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "high": "high",
       "xhigh": "xhigh"
     },
+    "reasoningMode": "budget",
     "input": [
       "text",
       "image"
@@ -153,6 +156,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "high": "high",
       "xhigh": "xhigh"
     },
+    "reasoningMode": "adaptive",
     "input": [
       "text",
       "image"
@@ -177,6 +181,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "high": "high",
       "xhigh": "xhigh"
     },
+    "reasoningMode": "budget",
     "input": [
       "text",
       "image"
@@ -200,6 +205,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "medium": "medium",
       "high": "high"
     },
+    "reasoningMode": "adaptive",
     "input": [
       "text",
       "image"
@@ -224,6 +230,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "high": "high",
       "xhigh": "xhigh"
     },
+    "reasoningMode": "adaptive",
     "input": [
       "text",
       "image"
@@ -248,6 +255,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "high": "high",
       "xhigh": "xhigh"
     },
+    "reasoningMode": "adaptive",
     "input": [
       "text",
       "image"
@@ -272,6 +280,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "high": "high",
       "xhigh": "xhigh"
     },
+    "reasoningMode": "adaptive",
     "input": [
       "text",
       "image"
@@ -296,6 +305,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "high": "high",
       "xhigh": "xhigh"
     },
+    "reasoningMode": "adaptive",
     "input": [
       "text",
       "image"
@@ -320,6 +330,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "high": "high",
       "xhigh": "xhigh"
     },
+    "reasoningMode": "budget",
     "input": [
       "text",
       "image"
@@ -343,6 +354,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "medium": "medium",
       "high": "high"
     },
+    "reasoningMode": "adaptive",
     "input": [
       "text",
       "image"
@@ -367,6 +379,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "high": "high",
       "xhigh": "xhigh"
     },
+    "reasoningMode": "adaptive",
     "input": [
       "text",
       "image"
@@ -391,6 +404,7 @@ export const LOWROUTER_CATALOG: readonly LowRouterModelRow[] = [
       "high": "high",
       "xhigh": "xhigh"
     },
+    "reasoningMode": "adaptive",
     "input": [
       "text",
       "image"

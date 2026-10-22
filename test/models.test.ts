@@ -3,11 +3,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { LOWROUTER_CATALOG } from "../src/catalog.generated.js";
 import {
   fetchLowRouterModelRows,
+  isAnthropicMessagesModelId,
   isPickerModelId,
   LOWROUTER_BASE_URL,
   LOWROUTER_MODELS_PATH,
   type LowRouterModelRow,
   projectLowRouterModelRows,
+  toAnthropicBaseUrl,
   toLowRouterModel,
 } from "../src/models.js";
 
@@ -112,6 +114,33 @@ describe("projectLowRouterModelRows", () => {
       thinkingLevelMap: { minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh" },
     });
     expect(model?.thinkingLevelMap).not.toHaveProperty("off");
+  });
+
+  it("keeps a Claude model's reasoning mode when Pi's Anthropic client acts on it", () => {
+    const mode = (id: string, reasoning_mode: unknown) =>
+      projectLowRouterModelRows([liveRow({ id, auto_routing: { reasoning_mode, reasoning_effort: ["low", "high"] } })])[0]
+        ?.reasoningMode;
+    expect(["adaptive", "budget", "thinking_level", undefined].map((value) => mode("auto/anthropic/claude", value))).toEqual(
+      ["adaptive", "budget", undefined, undefined],
+    );
+    expect(mode("auto/google/gemini", "adaptive")).toBeUndefined();
+    const [kept] = projectLowRouterModelRows(
+      [liveRow({ id: "auto/anthropic/claude", auto_routing: { reasoning_effort: ["low", "high"] } })],
+      [snapshotRow({ id: "auto/anthropic/claude", reasoningMode: "adaptive" })],
+    );
+    expect(kept?.reasoningMode).toBe("adaptive");
+    // An unknown mode, or a row without auto_routing, keeps the snapshot's too.
+    const snapshot = [snapshotRow({ id: "auto/anthropic/claude", reasoningMode: "adaptive" })];
+    const [unknown] = projectLowRouterModelRows(
+      [liveRow({ id: "auto/anthropic/claude", auto_routing: { reasoning_mode: "thinking_level", reasoning_effort: ["low"] } })],
+      snapshot,
+    );
+    expect(unknown?.reasoningMode).toBe("adaptive");
+    const [unrouted] = projectLowRouterModelRows(
+      [liveRow({ id: "auto/anthropic/claude", auto_routing: undefined, supported_parameters: ["reasoning_effort"] })],
+      snapshot,
+    );
+    expect(unrouted?.reasoningMode).toBe("adaptive");
   });
 
   it("leaves xhigh unmapped when the routes do not take it", () => {
@@ -219,6 +248,24 @@ describe("projectLowRouterModelRows", () => {
 });
 
 describe("toLowRouterModel", () => {
+  it("serves a Claude row through LowRouter's Anthropic API", () => {
+    const claude = snapshotRow({ id: "auto/anthropic/claude-sonnet-4.6", reasoningMode: "adaptive" });
+    const model = toLowRouterModel(claude);
+    expect(model).toMatchObject({
+      id: "auto/anthropic/claude-sonnet-4.6",
+      api: "anthropic-messages",
+      provider: "lowrouter",
+      baseUrl: LOWROUTER_BASE_URL,
+      compat: { forceAdaptiveThinking: true },
+    });
+    expect(model).not.toHaveProperty("reasoningMode");
+    expect(toLowRouterModel({ ...claude, reasoningMode: "budget" }).compat).toEqual({ forceAdaptiveThinking: false });
+    expect(toAnthropicBaseUrl("https://proxy.example/v1/")).toBe("https://proxy.example");
+    expect(toAnthropicBaseUrl("https://api.lowrouter.ai")).toBe("https://api.lowrouter.ai");
+    // An alias's target is not published, so it stays on chat completions.
+    expect(toLowRouterModel(snapshotRow({ id: "alias/claude" })).api).toBe("openai-completions");
+  });
+
   it("serves the row through LowRouter's chat completions API", () => {
     expect(toLowRouterModel(snapshotRow())).toMatchObject({
       id: "auto/fixture/never-bundled",
@@ -238,6 +285,9 @@ describe("snapshot", () => {
       expect(model.id.startsWith("auto/") && isPickerModelId(model.id), model.id).toBe(true);
       expect(model.contextWindow, model.id).toBeGreaterThan(0);
       expect(model.maxTokens, model.id).toBeLessThanOrEqual(model.contextWindow);
+      if (isAnthropicMessagesModelId(model.id) && model.reasoning) {
+        expect(model.reasoningMode, model.id).toBeDefined();
+      }
     }
     expect(new Set(LOWROUTER_CATALOG.map((model) => model.id)).size).toBe(LOWROUTER_CATALOG.length);
   });
