@@ -101,11 +101,48 @@ describe("projectLowRouterModelRows", () => {
     expect(projectLowRouterModelRows(rows)).toEqual([expect.objectContaining({ id: "alias/mine", name: "Fixture Model" })]);
   });
 
-  it("reads reasoning from supported_parameters", () => {
-    const [effort] = projectLowRouterModelRows([liveRow({ supported_parameters: ["tools", "reasoning_effort"] })]);
-    const [reasoning] = projectLowRouterModelRows([liveRow({ supported_parameters: ["reasoning"] })]);
+  it("maps the published effort levels onto Pi's thinking levels", () => {
+    const [model] = projectLowRouterModelRows([
+      liveRow({
+        auto_routing: { reasoning_mode: "adaptive", reasoning_effort: ["low", "medium", "high", "xhigh"] },
+      }),
+    ]);
+    expect(model).toMatchObject({
+      reasoning: true,
+      thinkingLevelMap: { minimal: null, low: "low", medium: "medium", high: "high", xhigh: "xhigh" },
+    });
+    expect(model?.thinkingLevelMap).not.toHaveProperty("off");
+  });
+
+  it("leaves xhigh unmapped when the routes do not take it", () => {
+    const [model] = projectLowRouterModelRows([liveRow({ auto_routing: { reasoning_effort: ["low", "medium", "high"] } })]);
+    expect(model?.thinkingLevelMap).toEqual({ minimal: null, low: "low", medium: "medium", high: "high" });
+  });
+
+  it("ignores effort values Pi has no level for", () => {
+    const [model] = projectLowRouterModelRows([liveRow({ auto_routing: { reasoning_effort: ["none", "max", 3] } })]);
+    expect(model).toMatchObject({ reasoning: false });
+    expect(model).not.toHaveProperty("thinkingLevelMap");
+  });
+
+  it("does not reason when an auto row publishes no levels", () => {
+    for (const auto_routing of [{ reasoning_mode: "unsupported" }, {}]) {
+      const [model] = projectLowRouterModelRows(
+        [liveRow({ auto_routing, supported_parameters: ["tools", "reasoning_effort"] })],
+        [snapshotRow({ thinkingLevelMap: { low: "low" } })],
+      );
+      expect(model).toMatchObject({ reasoning: false });
+      expect(model).not.toHaveProperty("thinkingLevelMap");
+    }
+  });
+
+  it("reads reasoning from supported_parameters on a row without auto_routing", () => {
+    const [effort] = projectLowRouterModelRows([
+      liveRow({ id: "alias/a", auto_routing: undefined, supported_parameters: ["tools", "reasoning_effort"] }),
+    ]);
+    const [plain] = projectLowRouterModelRows([liveRow({ id: "alias/b", auto_routing: undefined })]);
     expect(effort?.reasoning).toBe(true);
-    expect(reasoning?.reasoning).toBe(true);
+    expect(plain?.reasoning).toBe(false);
   });
 
   it("prices at the top of the USD range and ignores other currencies", () => {
@@ -155,10 +192,10 @@ describe("projectLowRouterModelRows", () => {
           auto_routing: undefined,
         }),
       ],
-      [snapshotRow({ input: ["text", "image"] })],
+      [snapshotRow({ input: ["text", "image"], thinkingLevelMap: { low: "low", high: "high" } })],
     );
     expect(model).toEqual({
-      ...snapshotRow({ input: ["text", "image"] }),
+      ...snapshotRow({ input: ["text", "image"], thinkingLevelMap: { low: "low", high: "high" } }),
       name: "auto/fixture/never-bundled",
     });
   });

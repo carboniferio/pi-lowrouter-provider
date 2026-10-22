@@ -43,7 +43,9 @@ Pinned routes (`<host>/<creator>/<model>`) and jurisdiction-scoped IDs
 (`auto/<creator>/<model>/eu`) stay out of the list. To use one, add it in `models.json` as
 described in the [LowRouter guide](https://lowrouter.ai/docs/integrations/pi).
 
-Context windows, output limits, input types and reasoning support come from `/v1/models`.
+Context windows, output limits and input types come from `/v1/models`. A model reasons when its
+default routes publish `reasoning_effort` levels there; Pi's thinking levels then map onto exactly
+those levels, and a level the routes don't take is not offered. Other models get no effort.
 A model without a published context window gets 32,768 tokens, so Pi compacts early rather than
 sending a prompt the model rejects. A model without an output limit gets 8,192.
 

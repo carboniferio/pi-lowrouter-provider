@@ -1,7 +1,16 @@
 // Live tests against LowRouter's production API, through Pi's model runtime. Gated
 // on LOWROUTER_LIVE_TEST=1 and LOWROUTER_API_KEY; they spend a few cents of the
 // key's credit.
-import { type Api, type AssistantMessage, type Context, createModels, type Model, type Tool, Type } from "@earendil-works/pi-ai";
+import {
+  type Api,
+  type AssistantMessage,
+  type Context,
+  createModels,
+  type Model,
+  type SimpleStreamOptions,
+  type Tool,
+  Type,
+} from "@earendil-works/pi-ai";
 import { beforeAll, describe, expect, it } from "vitest";
 import { lowrouterProvider } from "../src/index.js";
 
@@ -18,6 +27,9 @@ const MODELS = [
   "auto/anthropic/claude-haiku-4.5",
   "auto/openai/gpt-5.5",
 ];
+
+// Models whose default routes publish `reasoning_effort` levels.
+const REASONING_MODELS = ["auto/anthropic/claude-sonnet-4.6", "auto/google/gemini-3.1-pro-preview"];
 
 const readFileTool: Tool = {
   name: "read_file",
@@ -41,8 +53,12 @@ function liveModel(id: string): Model<Api> {
   return model;
 }
 
-async function run(id: string, context: Context): Promise<{ message: AssistantMessage; textDeltas: number }> {
-  const stream = models.streamSimple(liveModel(id), context);
+async function run(
+  id: string,
+  context: Context,
+  options?: SimpleStreamOptions,
+): Promise<{ message: AssistantMessage; textDeltas: number }> {
+  const stream = models.streamSimple(liveModel(id), context, options);
   let textDeltas = 0;
   for await (const event of stream) {
     if (event.type === "text_delta") {
@@ -84,6 +100,22 @@ describe.skipIf(!live).concurrent("LowRouter live", () => {
       expect(message.stopReason, message.errorMessage).toBe("toolUse");
       const call = message.content.find((block) => block.type === "toolCall");
       expect(call).toMatchObject({ name: "read_file", arguments: { path: expect.stringContaining("README") } });
+    });
+  }
+
+  // A model whose routes publish effort levels must take one through Pi's thinking
+  // level and still answer.
+  for (const id of REASONING_MODELS) {
+    it(`${id}: answers with a thinking level`, { timeout: 120_000 }, async () => {
+      const model = liveModel(id);
+      expect(model.reasoning).toBe(true);
+      const { message } = await run(
+        id,
+        { messages: [{ role: "user", content: "What is 17 * 23? Reply with the number only.", timestamp: Date.now() }] },
+        { reasoning: "medium" },
+      );
+      expect(message.stopReason, message.errorMessage).toBe("stop");
+      expect(message.content.some((block) => block.type === "text" && block.text.includes("391"))).toBe(true);
     });
   }
 });
