@@ -37,8 +37,12 @@ export type LowRouterModel = Model<"openai-completions">;
 /** The data half of a model; the release-time snapshot stores only this. */
 export type LowRouterModelRow = Pick<
   LowRouterModel,
-  "id" | "name" | "reasoning" | "input" | "cost" | "contextWindow" | "maxTokens"
+  "id" | "name" | "reasoning" | "thinkingLevelMap" | "input" | "cost" | "contextWindow" | "maxTokens"
 >;
+
+/** `reasoning_effort` values LowRouter publishes, in Pi's thinking-level order. */
+const EFFORT_LEVELS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 type PriceRange = { min?: unknown; max?: unknown };
 
@@ -51,6 +55,7 @@ type LowRouterLiveModelRow = {
   max_output_tokens?: unknown;
   capabilities?: { function_calling?: unknown; input_modalities?: unknown };
   auto_routing?: {
+    reasoning_effort?: unknown;
     pricing_range?: {
       currency?: unknown;
       prompt_per_1m_tokens?: PriceRange;
@@ -106,14 +111,46 @@ function readName(value: unknown, id: string): string {
 }
 
 /**
- * A model reasons when `/v1/models` lists a reasoning control for it. Without
- * `supported_parameters` the snapshot row decides; Pi then sends no effort.
+ * Pi's thinking levels mapped onto the `reasoning_effort` values the model's
+ * default routes apply. An unpublished level is `null`, so Pi does not offer it;
+ * `off` stays unmapped, so Pi sends no effort and the model keeps its default.
  */
-function readReasoning(value: unknown, fallback: LowRouterModelRow | undefined): boolean {
-  if (!Array.isArray(value)) {
-    return fallback?.reasoning ?? false;
+function thinkingLevelMap(levels: ReadonlySet<EffortLevel>): NonNullable<LowRouterModelRow["thinkingLevelMap"]> {
+  const map: NonNullable<LowRouterModelRow["thinkingLevelMap"]> = {};
+  for (const level of EFFORT_LEVELS) {
+    if (levels.has(level)) {
+      map[level] = level;
+    } else if (level !== "xhigh") {
+      // Pi offers xhigh only when mapped, and the other levels unless null.
+      map[level] = null;
+    }
   }
-  return value.includes("reasoning_effort") || value.includes("reasoning");
+  return map;
+}
+
+/**
+ * Reasoning support. `auto_routing.reasoning_effort` lists the levels every
+ * default route applies as sent; an `auto/` row without it gets no effort, which
+ * is the model's default. A row without `auto_routing` (an `alias/` model) falls
+ * back to `supported_parameters`, then to the snapshot row.
+ */
+function readReasoning(
+  row: LowRouterLiveModelRow,
+  fallback: LowRouterModelRow | undefined,
+): Pick<LowRouterModelRow, "reasoning" | "thinkingLevelMap"> {
+  const routing = row.auto_routing;
+  if (routing) {
+    const published = Array.isArray(routing.reasoning_effort) ? routing.reasoning_effort : [];
+    const levels = new Set(EFFORT_LEVELS.filter((level) => published.includes(level)));
+    return levels.size > 0 ? { reasoning: true, thinkingLevelMap: thinkingLevelMap(levels) } : { reasoning: false };
+  }
+  const params = row.supported_parameters;
+  if (Array.isArray(params) && (params.includes("reasoning_effort") || params.includes("reasoning"))) {
+    return { reasoning: true };
+  }
+  return fallback?.thinkingLevelMap
+    ? { reasoning: fallback.reasoning, thinkingLevelMap: fallback.thinkingLevelMap }
+    : { reasoning: fallback?.reasoning ?? false };
 }
 
 function projectRow(
@@ -147,7 +184,7 @@ function projectRow(
   return {
     id,
     name: readName(row.name, id),
-    reasoning: readReasoning(row.supported_parameters, fallback),
+    ...readReasoning(row, fallback),
     input: readInput(row.capabilities?.input_modalities, fallback),
     cost: {
       input: readRangeMax(usd?.prompt_per_1m_tokens) ?? fallback?.cost.input ?? 0,
