@@ -200,10 +200,10 @@ function readReasoningMode(
  * `ttl_seconds` for Pi's short retention, `extended_ttl_seconds` for long. Pi keeps
  * a cache warm only for a model that declares the lifetime of the retention used.
  * Only Claude rows get one: Pi sends `cache_control` on the Anthropic API alone,
- * and LowRouter adds none on chat completions, so a chat completions model (an
- * `alias/` to Claude among them) writes no cache for Pi to warm, and each refresh
- * would bill the full prompt. A row that leaves the field out states no lifetime,
- * so none is declared, not even the snapshot's.
+ * and LowRouter adds none on chat completions. There a model is cached only where
+ * its provider caches on its own, which the row does not say; an `alias/` to Claude
+ * writes no cache, and each refresh would bill the full prompt. A row that leaves
+ * the field out states no lifetime, so none is declared, not even the snapshot's.
  */
 function readPromptCache(id: string, row: LowRouterLiveModelRow): LowRouterModelRow["promptCache"] {
   if (!isAnthropicMessagesModelId(id)) {

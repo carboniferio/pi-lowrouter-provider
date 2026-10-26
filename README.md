@@ -59,10 +59,11 @@ A Claude model declares the prompt cache lifetimes its routes publish (`auto_rou
 (`PI_CACHE_RETENTION=long`). Pi keeps a cache warm only for a model with a lifetime for the
 retention in use, and by default only while a run is going; set `cacheWarming` to `idle` in Pi's
 global settings (Pi ignores it in project settings) to warm between runs too. Pi does not warm a
-`budget` mode model while thinking is on: the replay would change the thinking budget, which the
-cache is keyed on. A model whose routes publish no lifetime declares none, and so
-does every model on chat completions: Pi sends `cache_control` only on the Anthropic API, so no
-cache is written there for Pi to keep warm.
+Claude model outside `adaptive` mode while thinking is on: the replay would change the thinking
+budget, which the cache is keyed on. A model whose routes publish no lifetime declares none, and so
+does every model on chat completions. Pi sends `cache_control` only on the Anthropic API and
+LowRouter adds none, so a chat completions model is cached only where its provider caches on its
+own, which `/v1/models` does not say; an `alias/` to Claude is not cached at all.
 A model without a published context window gets 32,768 tokens, so Pi compacts early rather than
 sending a prompt the model rejects. A model without an output limit gets 8,192.
 
