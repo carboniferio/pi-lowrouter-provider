@@ -143,6 +143,52 @@ describe("projectLowRouterModelRows", () => {
     expect(unrouted?.reasoningMode).toBe("adaptive");
   });
 
+  it("declares a Claude model's published prompt cache lifetimes", () => {
+    const promptCache = (prompt_cache: unknown, id = "auto/anthropic/claude") => {
+      const [model] = projectLowRouterModelRows([liveRow({ id, auto_routing: { prompt_cache } })]);
+      return model && "promptCache" in model ? model.promptCache : "absent";
+    };
+    expect(promptCache({ ttl_seconds: 300, extended_ttl_seconds: 3600 })).toEqual({ short: 300, long: 3600 });
+    expect(promptCache({ ttl_seconds: 300 })).toEqual({ short: 300 });
+    expect(promptCache({ extended_ttl_seconds: 3600 })).toEqual({ long: 3600 });
+    expect(promptCache(undefined)).toBe("absent");
+    expect(promptCache({})).toBe("absent");
+  });
+
+  it("drops malformed prompt cache lifetimes", () => {
+    const promptCache = (prompt_cache: unknown) => {
+      const [model] = projectLowRouterModelRows([liveRow({ id: "auto/anthropic/claude", auto_routing: { prompt_cache } })]);
+      return model && "promptCache" in model ? model.promptCache : "absent";
+    };
+    for (const bad of [0, -300, 1.5, "300", null, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(promptCache({ ttl_seconds: bad, extended_ttl_seconds: bad }), String(bad)).toBe("absent");
+    }
+    expect(promptCache({ ttl_seconds: 300, extended_ttl_seconds: "1h" })).toEqual({ short: 300 });
+    for (const bad of [300, "300", [300], null]) {
+      expect(promptCache(bad), JSON.stringify(bad)).toBe("absent");
+    }
+  });
+
+  it("declares no prompt cache on chat completions models", () => {
+    const prompt_cache = { ttl_seconds: 300, extended_ttl_seconds: 3600 };
+    const models = projectLowRouterModelRows([
+      liveRow({ id: "auto/openai/gpt", auto_routing: { prompt_cache } }),
+      liveRow({ id: "alias/claude", auto_routing: { prompt_cache } }),
+    ]);
+    expect(models).toHaveLength(2);
+    for (const model of models) {
+      expect(model, model.id).not.toHaveProperty("promptCache");
+    }
+  });
+
+  it("does not keep the snapshot's prompt cache when the live row states none", () => {
+    const snapshot = [snapshotRow({ id: "auto/anthropic/claude", promptCache: { short: 300, long: 3600 } })];
+    for (const auto_routing of [{}, undefined]) {
+      const [model] = projectLowRouterModelRows([liveRow({ id: "auto/anthropic/claude", auto_routing })], snapshot);
+      expect(model).not.toHaveProperty("promptCache");
+    }
+  });
+
   it("leaves xhigh unmapped when the routes do not take it", () => {
     const [model] = projectLowRouterModelRows([liveRow({ auto_routing: { reasoning_effort: ["low", "medium", "high"] } })]);
     expect(model?.thinkingLevelMap).toEqual({ minimal: null, low: "low", medium: "medium", high: "high" });
@@ -259,6 +305,11 @@ describe("toLowRouterModel", () => {
       compat: { forceAdaptiveThinking: true },
     });
     expect(model).not.toHaveProperty("reasoningMode");
+    expect(model).not.toHaveProperty("promptCache");
+    expect(toLowRouterModel({ ...claude, promptCache: { short: 300, long: 3600 } }).promptCache).toEqual({
+      short: 300,
+      long: 3600,
+    });
     expect(toLowRouterModel({ ...claude, reasoningMode: "budget" }).compat).toEqual({ forceAdaptiveThinking: false });
     expect(toAnthropicBaseUrl("https://proxy.example/v1/")).toBe("https://proxy.example");
     expect(toAnthropicBaseUrl("https://api.lowrouter.ai")).toBe("https://api.lowrouter.ai");
