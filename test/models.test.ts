@@ -146,6 +146,7 @@ describe("projectLowRouterModelRows", () => {
   /** The `promptCache` a row with this `auto_routing.prompt_cache` projects to, or "absent". */
   const promptCache = (prompt_cache: unknown, id = "auto/anthropic/claude") => {
     const [model] = projectLowRouterModelRows([liveRow({ id, auto_routing: { prompt_cache } })]);
+    expect(model, id).toBeDefined();
     return model && "promptCache" in model ? model.promptCache : "absent";
   };
 
@@ -177,6 +178,7 @@ describe("projectLowRouterModelRows", () => {
     const snapshot = [snapshotRow({ id: "auto/anthropic/claude", promptCache: { short: 300, long: 3600 } })];
     for (const auto_routing of [{}, undefined]) {
       const [model] = projectLowRouterModelRows([liveRow({ id: "auto/anthropic/claude", auto_routing })], snapshot);
+      expect(model).toBeDefined();
       expect(model).not.toHaveProperty("promptCache");
     }
   });
