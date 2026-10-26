@@ -54,6 +54,16 @@ default routes publish `reasoning_effort` levels there; Pi's thinking levels the
 those levels, and a level the routes don't take is not offered. Other models get no effort.
 A Claude model whose `reasoning_mode` is `adaptive` takes the level as an effort; one in `budget`
 mode gets a thinking-token budget for it.
+A Claude model declares the prompt cache lifetimes its routes publish (`auto_routing.prompt_cache`):
+`ttl_seconds` for Pi's default retention and `extended_ttl_seconds` for long retention
+(`PI_CACHE_RETENTION=long`). Pi keeps a cache warm only for a model with a lifetime for the
+retention in use, and by default only while a run is going; set `cacheWarming` to `idle` in Pi's
+global settings (Pi ignores it in project settings) to warm between runs too. Pi does not warm a
+Claude model outside `adaptive` mode while thinking is on: the replay would change the thinking
+budget, which the cache is keyed on. A model whose routes publish no lifetime declares none, and so
+does every model on chat completions. Pi sends `cache_control` only on the Anthropic API and
+LowRouter adds none, so a chat completions model is cached only where its provider caches on its
+own, which `/v1/models` does not say; an `alias/` to Claude is not cached at all.
 A model without a published context window gets 32,768 tokens, so Pi compacts early rather than
 sending a prompt the model rejects. A model without an output limit gets 8,192.
 
@@ -82,9 +92,12 @@ so the provider reads USD prices (`?currency=usd`). An `auto/` model has several
 different prices, and the provider shows the dearest one, so Pi's estimate is an upper bound for
 input and output tokens. Cache tokens are different: `/v1/models` publishes no cache-write price
 and a cache-read price for only some models, and Pi counts an unpublished price as zero. Claude
-caches the prompt prefix on every turn, so its estimate can come out below the bill. What you
-were charged is in each response's `usage.cost` (EUR) and on
-[lowrouter.ai/app](https://lowrouter.ai/app).
+caches the prompt prefix on every turn, so its estimate can come out below the bill. A cache
+warming request that hits the cache is billed as a cache read of the prompt plus one output
+token; one served by a route that holds no cache for the prompt writes it again at the
+cache-write price. Where the cache-read price is unpublished, Pi counts the refresh as nearly free
+when it decides whether to send one. What you were charged is in each response's `usage.cost`
+(EUR) and on [lowrouter.ai/app](https://lowrouter.ai/app).
 
 ## Development
 

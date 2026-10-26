@@ -143,6 +143,46 @@ describe("projectLowRouterModelRows", () => {
     expect(unrouted?.reasoningMode).toBe("adaptive");
   });
 
+  /** The `promptCache` a row with this `auto_routing.prompt_cache` projects to, or "absent". */
+  const promptCache = (prompt_cache: unknown, id = "auto/anthropic/claude") => {
+    const [model] = projectLowRouterModelRows([liveRow({ id, auto_routing: { prompt_cache } })]);
+    expect(model, id).toBeDefined();
+    return model && "promptCache" in model ? model.promptCache : "absent";
+  };
+
+  it("declares a Claude model's published prompt cache lifetimes", () => {
+    expect(promptCache({ ttl_seconds: 300, extended_ttl_seconds: 3600 })).toEqual({ short: 300, long: 3600 });
+    expect(promptCache({ ttl_seconds: 300 })).toEqual({ short: 300 });
+    expect(promptCache({ extended_ttl_seconds: 3600 })).toEqual({ long: 3600 });
+    expect(promptCache(undefined)).toBe("absent");
+    expect(promptCache({})).toBe("absent");
+  });
+
+  it("drops malformed prompt cache lifetimes", () => {
+    for (const bad of [0, -300, 1.5, "300", null, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(promptCache({ ttl_seconds: bad, extended_ttl_seconds: bad }), String(bad)).toBe("absent");
+    }
+    expect(promptCache({ ttl_seconds: 300, extended_ttl_seconds: "1h" })).toEqual({ short: 300 });
+    for (const bad of [300, "300", [300], null]) {
+      expect(promptCache(bad), JSON.stringify(bad)).toBe("absent");
+    }
+  });
+
+  it("declares no prompt cache on chat completions models", () => {
+    for (const id of ["auto/openai/gpt", "alias/claude"]) {
+      expect(promptCache({ ttl_seconds: 300, extended_ttl_seconds: 3600 }, id), id).toBe("absent");
+    }
+  });
+
+  it("does not keep the snapshot's prompt cache when the live row states none", () => {
+    const snapshot = [snapshotRow({ id: "auto/anthropic/claude", promptCache: { short: 300, long: 3600 } })];
+    for (const auto_routing of [{}, undefined]) {
+      const [model] = projectLowRouterModelRows([liveRow({ id: "auto/anthropic/claude", auto_routing })], snapshot);
+      expect(model).toBeDefined();
+      expect(model).not.toHaveProperty("promptCache");
+    }
+  });
+
   it("leaves xhigh unmapped when the routes do not take it", () => {
     const [model] = projectLowRouterModelRows([liveRow({ auto_routing: { reasoning_effort: ["low", "medium", "high"] } })]);
     expect(model?.thinkingLevelMap).toEqual({ minimal: null, low: "low", medium: "medium", high: "high" });

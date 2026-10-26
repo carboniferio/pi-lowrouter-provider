@@ -39,7 +39,7 @@ export type LowRouterModel = Model<"openai-completions"> | Model<"anthropic-mess
 /** The data half of a model; the release-time snapshot stores only this. */
 export type LowRouterModelRow = Pick<
   LowRouterModel,
-  "id" | "name" | "reasoning" | "thinkingLevelMap" | "input" | "cost" | "contextWindow" | "maxTokens"
+  "id" | "name" | "reasoning" | "thinkingLevelMap" | "promptCache" | "input" | "cost" | "contextWindow" | "maxTokens"
 > & {
   /**
    * `auto_routing.reasoning_mode` of a Claude model: `adaptive` takes Pi's
@@ -69,6 +69,7 @@ type LowRouterLiveModelRow = {
   auto_routing?: {
     reasoning_effort?: unknown;
     reasoning_mode?: unknown;
+    prompt_cache?: { ttl_seconds?: unknown; extended_ttl_seconds?: unknown };
     pricing_range?: {
       currency?: unknown;
       prompt_per_1m_tokens?: PriceRange;
@@ -194,6 +195,25 @@ function readReasoningMode(
   return REASONING_MODES.find((mode) => mode === row.auto_routing?.reasoning_mode) ?? fallback?.reasoningMode;
 }
 
+/**
+ * Prompt cache lifetimes of a Claude model, in seconds: `auto_routing.prompt_cache`
+ * `ttl_seconds` for Pi's short retention, `extended_ttl_seconds` for long. Pi keeps
+ * a cache warm only for a model that declares the lifetime of the retention used.
+ * Only Claude rows get one: Pi sends `cache_control` on the Anthropic API alone,
+ * and LowRouter adds none on chat completions. There a model is cached only where
+ * its provider caches on its own, which the row does not say; an `alias/` to Claude
+ * writes no cache, and each refresh would bill the full prompt. A row that leaves
+ * the field out states no lifetime, so none is declared, not even the snapshot's.
+ */
+function readPromptCache(id: string, row: LowRouterLiveModelRow): LowRouterModelRow["promptCache"] {
+  if (!isAnthropicMessagesModelId(id)) {
+    return undefined;
+  }
+  const short = readPositiveInteger(row.auto_routing?.prompt_cache?.ttl_seconds);
+  const long = readPositiveInteger(row.auto_routing?.prompt_cache?.extended_ttl_seconds);
+  return short || long ? { ...(short && { short }), ...(long && { long }) } : undefined;
+}
+
 function projectRow(
   row: LowRouterLiveModelRow,
   fallbacks: ReadonlyMap<string, LowRouterModelRow>,
@@ -216,6 +236,7 @@ function projectRow(
   const usd = pricing?.currency === "USD" ? pricing : undefined;
 
   const reasoningMode = readReasoningMode(id, row, fallback);
+  const promptCache = readPromptCache(id, row);
   const contextWindow =
     readPositiveInteger(row.context_length) ?? fallback?.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   const maxTokens = Math.min(
@@ -228,6 +249,7 @@ function projectRow(
     name: readName(row.name, id),
     ...readReasoning(row, fallback),
     ...(reasoningMode && { reasoningMode }),
+    ...(promptCache && { promptCache }),
     input: readInput(row.capabilities?.input_modalities, fallback),
     cost: {
       input: readRangeMax(usd?.prompt_per_1m_tokens) ?? fallback?.cost.input ?? 0,

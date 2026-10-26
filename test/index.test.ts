@@ -18,10 +18,16 @@ const liveRows = [
     auto_routing: { pricing_range: { currency: "USD", prompt_per_1m_tokens: { max: 1 } } },
   },
   { id: "alias/team-coder", modality: "chat", capabilities: { function_calling: true } },
+  {
+    id: "auto/anthropic/claude-fixture",
+    modality: "chat",
+    capabilities: { function_calling: true },
+    auto_routing: { prompt_cache: { ttl_seconds: 300, extended_ttl_seconds: 3600 } },
+  },
   { id: "auto/fixture/embedder", modality: "embedding", capabilities: { function_calling: false } },
 ];
 
-const liveIds = ["auto/fixture/live-only", "alias/team-coder"];
+const liveIds = ["auto/fixture/live-only", "alias/team-coder", "auto/anthropic/claude-fixture"];
 const snapshotIds = LOWROUTER_CATALOG.map((model) => model.id);
 
 /** Pi's model runtime with the LowRouter provider, `LOWROUTER_API_KEY` set unless `key` is null. */
@@ -106,6 +112,8 @@ describe("lowrouterProvider", () => {
       maxTokens: 64_000,
       cost: { input: 1 },
     });
+    expect(models.getModel("lowrouter", "auto/anthropic/claude-fixture")?.promptCache).toEqual({ short: 300, long: 3600 });
+    expect(models.getModel("lowrouter", "auto/fixture/live-only")).not.toHaveProperty("promptCache");
   });
 
   it("drops the snapshot when the live list is empty", async () => {
@@ -129,6 +137,7 @@ describe("lowrouterProvider", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(ids(offline)).toEqual(liveIds);
+    expect(offline.getModel("lowrouter", "auto/anthropic/claude-fixture")?.promptCache).toEqual({ short: 300, long: 3600 });
   });
 
   it("lists LowRouter and refreshes the public list without a key", async () => {
