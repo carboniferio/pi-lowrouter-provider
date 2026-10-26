@@ -209,9 +209,8 @@ function readPromptCache(id: string, row: LowRouterLiveModelRow): LowRouterModel
   if (!isAnthropicMessagesModelId(id)) {
     return undefined;
   }
-  const published = asRecord(row.auto_routing?.prompt_cache);
-  const short = readPositiveInteger(published?.ttl_seconds);
-  const long = readPositiveInteger(published?.extended_ttl_seconds);
+  const short = readPositiveInteger(row.auto_routing?.prompt_cache?.ttl_seconds);
+  const long = readPositiveInteger(row.auto_routing?.prompt_cache?.extended_ttl_seconds);
   return short || long ? { ...(short && { short }), ...(long && { long }) } : undefined;
 }
 
