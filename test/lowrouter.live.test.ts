@@ -9,7 +9,6 @@ import {
   type Model,
   type SimpleStreamOptions,
   type Tool,
-  Type,
 } from "@earendil-works/pi-ai";
 import { beforeAll, describe, expect, it } from "vitest";
 import { lowrouterProvider } from "../src/index.js";
@@ -45,7 +44,11 @@ const LONG_SYSTEM_PROMPT = Array.from(
 const readFileTool: Tool = {
   name: "read_file",
   description: "Read a file from the workspace and return its contents.",
-  parameters: Type.Object({ path: Type.String({ description: "Workspace-relative path" }) }),
+  parameters: {
+    type: "object",
+    properties: { path: { type: "string", description: "Workspace-relative path" } },
+    required: ["path"],
+  },
 };
 
 const models = createModels({
